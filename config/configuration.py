@@ -1,100 +1,120 @@
 # config/configuration.py
 import os
 from typing import Any, Optional
-from dotenv import load_dotenv
+import yaml  # 需要安装: pip install pyyaml
+from pathlib import Path
 import logging
 
-class Config:
-    """集中式配置管理器，统一处理环境变量加载和验证"""
+class YAMLConfig:
+    """纯YAML配置管理器，单例模式"""
     
     _instance = None
-    _loaded = False
+    _config_data = None
+    _config_path = None
     
-    def __new__(cls):
+    def __new__(cls, config_path: str = 'config.yaml'):
         if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance = super(YAMLConfig, cls).__new__(cls)
+            # 初始化时确定配置路径
+            cls._config_path = Path(config_path)
         return cls._instance
     
-    def __init__(self):
-        if not hasattr(self, '_initialized') or not self._initialized:
+    def __init__(self, config_path: str = 'config.yaml'):
+        # 防止__init__在已存在实例时重复运行
+        if not hasattr(self, '_initialized'):
             self.logger = logging.getLogger(__name__)
-            self._cache = {}
-            self._required_keys = []
             self._initialized = True
+            # 注意：加载动作不在__init__中自动执行，由显式load()调用控制
     
     def load(self, required_keys: Optional[list] = None) -> None:
-        """加载环境变量并验证必需项"""
-        if self._loaded:
-            return
+        """
+        加载并解析YAML配置文件。
         
-        load_dotenv()
-        self.logger.info("正在加载环境变量配置", extra={'tag': 'CONFIG_LOAD'})
+        Args:
+            required_keys: 必需配置项的路径列表，例如 ['model.api_key', 'database.host']
+        """
+        if not self._config_path.exists():
+            error_msg = f"配置文件不存在: {self._config_path.absolute()}"
+            self.logger.critical(error_msg, extra={'tag': 'CONFIG_ERROR'})
+            raise FileNotFoundError(error_msg)
         
+        try:
+            with open(self._config_path, 'r', encoding='utf-8') as f:
+                self._config_data = yaml.safe_load(f) or {}
+            self.logger.info(f"YAML配置文件加载成功: {self._config_path}", extra={'tag': 'CONFIG_LOAD'})
+        except yaml.YAMLError as e:
+            error_msg = f"配置文件YAML格式错误: {e}"
+            self.logger.critical(error_msg, extra={'tag': 'CONFIG_ERROR'})
+            raise ValueError(error_msg)
+        
+        # 验证必需配置项
         if required_keys:
-            self._required_keys = required_keys
-            self._validate_required_keys()
-        
-        self._loaded = True
-        self.logger.info("环境变量配置加载完成", extra={'tag': 'CONFIG_LOAD'})
+            self._validate_required_keys(required_keys)
     
-    def _validate_required_keys(self) -> None:
-        """验证必需的环境变量是否已设置"""
+    def _validate_required_keys(self, required_keys: list) -> None:
+        """验证必需的配置项路径是否存在"""
         missing_keys = []
-        for key in self._required_keys:
-            if not os.getenv(key):
-                missing_keys.append(key)
+        for key_path in required_keys:
+            if self._get_nested_value(key_path) is None:
+                missing_keys.append(key_path)
         
         if missing_keys:
-            error_msg = f"缺少必需的环境变量: {', '.join(missing_keys)}"
+            error_msg = f"配置文件中缺少必需的配置项: {', '.join(missing_keys)}"
             self.logger.critical(error_msg, extra={'tag': 'CONFIG_ERROR'})
             raise ValueError(error_msg)
     
-    def get(self, key: str, default: Any = None, required: bool = False) -> Any:
+    def _get_nested_value(self, key_path: str) -> Any:
+        """通过点分路径（如 'model.api_key'）获取嵌套字典的值"""
+        if not self._config_data:
+            return None
+        
+        keys = key_path.split('.')
+        value = self._config_data
+        for k in keys:
+            if isinstance(value, dict) and k in value:
+                value = value[k]
+            else:
+                return None
+        return value
+    
+    def get(self, key_path: str, default: Any = None, required: bool = False) -> Any:
         """
-        获取环境变量值
+        获取配置值。
         
         Args:
-            key: 环境变量名
-            default: 默认值（当环境变量不存在时返回）
+            key_path: 配置项的点分路径，例如 'model.api_key'
+            default: 默认值（当配置项不存在时返回）
             required: 是否为必需项，如果是必需项但不存在会抛出异常
             
         Returns:
-            环境变量值或默认值
+            配置值或默认值
         """
-        if not self._loaded:
-            self.logger.warning("配置未显式加载，正在自动加载", extra={'tag': 'CONFIG_WARN'})
-            self.load()
+        if self._config_data is None:
+            self.logger.warning("配置未加载，正在尝试自动加载", extra={'tag': 'CONFIG_WARN'})
+            self.load()  # 自动加载
         
-        # 优先从缓存获取
-        if key in self._cache:
-            return self._cache[key]
+        value = self._get_nested_value(key_path)
         
-        value = os.getenv(key, default)
+        if value is None:
+            if required:
+                error_msg = f"必需的配置项 '{key_path}' 未在配置文件中设置"
+                self.logger.error(error_msg, extra={'tag': 'CONFIG_ERROR'})
+                raise KeyError(error_msg)
+            # 安全日志：对疑似敏感信息的键进行掩码
+            if 'key' in key_path.lower() or 'secret' in key_path.lower() or 'token' in key_path.lower():
+                self.logger.debug(f"获取配置 {key_path}: (使用默认值或未设置)", extra={'tag': 'CONFIG_GET'})
+            else:
+                self.logger.debug(f"获取配置 {key_path}: {default} (使用默认值)", extra={'tag': 'CONFIG_GET'})
+            return default
         
-        if required and value is None:
-            error_msg = f"必需的环境变量 '{key}' 未设置"
-            self.logger.error(error_msg, extra={'tag': 'CONFIG_ERROR'})
-            raise ValueError(error_msg)
-        
-        # 安全记录敏感信息
-        if 'key' in key.lower() or 'secret' in key.lower() or 'token' in key.lower():
-            masked_value = self._mask_sensitive_value(value) if value else "未设置"
-            self.logger.debug(f"获取环境变量 {key}: {masked_value}", extra={'tag': 'CONFIG_GET'})
+        # 安全日志
+        if isinstance(value, str) and ('key' in key_path.lower() or 'secret' in key_path.lower() or 'token' in key_path.lower()):
+            masked_value = value[:4] + '*' * (len(value) - 8) + value[-4:] if len(value) > 8 else "***"
+            self.logger.debug(f"获取配置 {key_path}: {masked_value}", extra={'tag': 'CONFIG_GET'})
         else:
-            self.logger.debug(f"获取环境变量 {key}: {value}", extra={'tag': 'CONFIG_GET'})
+            self.logger.debug(f"获取配置 {key_path}: {value}", extra={'tag': 'CONFIG_GET'})
         
-        self._cache[key] = value
         return value
-    
-    def _mask_sensitive_value(self, value: str) -> str:
-        """掩码敏感信息（如API密钥）"""
-        if not value or len(value) <= 8:
-            return "***"
-        return value[:4] + "*" * (len(value) - 8) + value[-4:]
-    
-    def get_all(self, keys: list) -> dict:
-        """批量获取多个环境变量"""
-        return {key: self.get(key) for key in keys}
 
 # 全局配置实例
-config = Config()
+config = YAMLConfig()

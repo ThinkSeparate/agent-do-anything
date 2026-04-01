@@ -25,7 +25,7 @@ class ReActAgent:
         self.project_directory = project_directory
         
         # 0. 加载并验证必需配置
-        required_keys = ["MODEL_NAME", "BASE_URL", "API_KEY"]
+        required_keys = ['model.api_key', 'model.base_url', 'model.name']
         config.load(required_keys=required_keys)
         
         # 1. 初始化工具管理器
@@ -33,9 +33,9 @@ class ReActAgent:
         
         # 2. 初始化LLM客户端
         self.llm_client = LLMClient(
-            model_name=config.get("MODEL_NAME", required=True),
-            base_url=config.get("BASE_URL", required=True),
-            api_key=config.get("API_KEY", required=True)
+            model_name=config.get('model.name'),
+            base_url=config.get('model.base_url'),
+            api_key=config.get('model.api_key')
         )
             
         # 3. 初始化动作解析器
