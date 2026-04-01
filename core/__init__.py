@@ -1,5 +1,14 @@
 # core/__init__.py
 from .react_agent import ReActAgent
+from .tool_manager import ToolManager
+from .llm_client import LLMClient
+from .action_parser import ActionParser
+from .execution_loop import ExecutionLoop
 
-# 明确导出列表，当使用 `from core import *` 时，只导入 ReActAgent
-__all__ = ['ReActAgent']
+__all__ = [
+    'ReActAgent',
+    'ToolManager', 
+    'LLMClient',
+    'ActionParser',
+    'ExecutionLoop'
+]
