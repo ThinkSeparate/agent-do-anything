@@ -9,6 +9,7 @@ from config.prompts import react_system_prompt_template
 from core.tool_manager import ToolManager
 from core.llm_client import LLMClient
 from core.execution_loop import ExecutionLoop
+from utils.tools import configure_agent_output_root
 
 
 class ReActAgent:
@@ -24,12 +25,17 @@ class ReActAgent:
         self.project_directory = project_directory
         
         # 0. 加载并验证必需配置
-        required_keys = ['model.api_key', 'model.base_url', 'model.name']
+        required_keys = ['model.api_key', 'model.base_url', 'model.name', 'agent.output_root']
         config.load(required_keys=required_keys)
         
-        # 1. 初始化工具管理器
-        self.tool_manager = ToolManager()
+        # 从配置中读取路径。配置项 `agent.output_root` 可以是绝对路径，也可以是相对于 project_directory 的相对路径。
+        self.agent_output_root = self.get_output_root(config.get('agent.output_root'))
+        configure_agent_output_root(lambda: self.agent_output_root)
+        self.logger.info(f"已从配置加载安全写入目录: {self.agent_output_root}", extra={'tag': 'AGENT_INIT'})
         
+        # 1. 初始化工具管理器 (ToolManager 保持纯净，无需修改)
+        self.tool_manager = ToolManager()
+            
         # 2. 初始化LLM客户端
         self.llm_client = LLMClient(
             model_name=config.get('model.name'),
@@ -71,16 +77,28 @@ class ReActAgent:
             os.path.abspath(os.path.join(self.project_directory, f))
             for f in os.listdir(self.project_directory)
         )
+        agent_output = self.agent_output_root
         
         result = Template(system_prompt_template).substitute(
             operating_system=self.get_operating_system_name(),
             tool_list=tool_list,
-            file_list=file_list
+            file_list=file_list,
+            agent_output=agent_output
         )
         
         self.logger.debug(f"系统提示渲染完成，长度: {len(result)} 字符", 
                          extra={'tag': 'PROMPT_RENDER'})
         return result
+    
+    def get_output_root(self, output_root):
+        output_root_config = config.get('agent.output_root')
+        if os.path.isabs(output_root_config):
+            agent_output_root = output_root_config
+        else:
+            # 视为相对于 project_directory 的相对路径
+            agent_output_root = os.path.join(self.project_directory, output_root_config)
+        # 确保是绝对路径
+        return os.path.abspath(agent_output_root)
     
     @staticmethod
     def get_env(env_key) -> str:
