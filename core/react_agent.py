@@ -8,7 +8,6 @@ from config.configuration import config
 from config.prompts import react_system_prompt_template
 from core.tool_manager import ToolManager
 from core.llm_client import LLMClient
-from core.action_parser import ActionParser
 from core.execution_loop import ExecutionLoop
 
 
@@ -38,9 +37,6 @@ class ReActAgent:
             api_key=config.get('model.api_key')
         )
             
-        # 3. 初始化动作解析器
-        self.action_parser = ActionParser()
-        
         # 4. 渲染系统提示
         system_prompt = self.render_system_prompt(react_system_prompt_template)
         
@@ -48,7 +44,6 @@ class ReActAgent:
         self.execution_loop = ExecutionLoop(
             tool_manager=self.tool_manager,
             llm_client=self.llm_client,
-            action_parser=self.action_parser,
             system_prompt=system_prompt
         )
         

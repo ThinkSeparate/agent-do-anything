@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 # tools.py
 class ToolSet:
@@ -28,6 +29,18 @@ class ToolSet:
     @staticmethod
     def run_terminal_command(command):
         """用于执行终端命令"""
-        import subprocess
+        # 执行终端命令需要询问
+        should_continue = input(f"\n⚠️  即将执行终端命令: {command}\n是否继续？（Y/N）: ")
+        if should_continue.lower() != 'y':
+            return "用户取消了终端命令的执行。"
+        
+        # 执行命令
         run_result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        return "执行成功" if run_result.returncode == 0 else run_result.stderr
+        if run_result.returncode == 0:
+            # 成功时，返回标准输出，如果为空则返回成功提示
+            output = run_result.stdout.strip()
+            return f"命令执行成功。输出：\n{output}" if output else "命令执行成功（无输出）。"
+        else:
+            # 失败时，返回错误信息
+            error_output = run_result.stderr.strip()
+            return f"命令执行失败（返回码 {run_result.returncode}）。错误输出：\n{error_output}"
