@@ -4,6 +4,7 @@ import platform
 import logging
 from string import Template
 
+from config.configuration import config
 from config.prompts import react_system_prompt_template
 from core.tool_manager import ToolManager
 from core.llm_client import LLMClient
@@ -18,22 +19,25 @@ class ReActAgent:
     """
     
     def __init__(self, project_directory: str):
-        # 获取本类的日志器
         self.logger = logging.getLogger(__name__)
         self.logger.info("ReActAgent 初始化开始", extra={'tag': 'AGENT_INIT'})
         
         self.project_directory = project_directory
+        
+        # 0. 加载并验证必需配置
+        required_keys = ["MODEL_NAME", "BASE_URL", "API_KEY"]
+        config.load(required_keys=required_keys)
         
         # 1. 初始化工具管理器
         self.tool_manager = ToolManager()
         
         # 2. 初始化LLM客户端
         self.llm_client = LLMClient(
-            model_name=self.get_env("MODEL_NAME"),
-            base_url=self.get_env("BASE_URL"),
-            api_key=self.get_env("API_KEY")
+            model_name=config.get("MODEL_NAME", required=True),
+            base_url=config.get("BASE_URL", required=True),
+            api_key=config.get("API_KEY", required=True)
         )
-        
+            
         # 3. 初始化动作解析器
         self.action_parser = ActionParser()
         

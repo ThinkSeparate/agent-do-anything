@@ -17,22 +17,8 @@ class LLMClient:
         self.model_name = model_name
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         
-        self.logger.info(f"LLMClient 初始化完成，模型: {model_name}", extra={'tag': 'LLM_CLIENT_INIT'})
-
-    @staticmethod
-    def get_env(env_key: str) -> str:
-        """从环境变量加载配置。"""
-        load_dotenv()
-        value = os.getenv(env_key)
-        if not value:
-            error_msg = f"未找到 {env_key} 环境变量，请在 .env 文件中设置。"
-            logging.error(error_msg, extra={'tag': 'ENV_ERROR'})
-            raise ValueError(error_msg)
-        
-        # 安全地记录环境变量（隐藏敏感信息的部分）
-        masked_value = value[:4] + "*" * (len(value) - 8) + value[-4:] if len(value) > 8 else "***"
-        logging.debug(f"已加载环境变量 {env_key}: {masked_value}", extra={'tag': 'ENV_LOAD'})
-        return value
+        self.logger.info(f"LLMClient 初始化完成，模型: {model_name}", 
+                        extra={'tag': 'LLM_CLIENT_INIT'})
 
     def call(self, messages: List[Dict[str, str]]) -> str:
         """
