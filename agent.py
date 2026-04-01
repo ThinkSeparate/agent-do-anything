@@ -28,9 +28,7 @@ def main(project_directory):
     logging.info("开始执行任务", extra={'tag': 'TASK_START'})
     final_answer = agent.run(task)
     logging.info("任务执行完成", extra={'tag': 'TASK_END'})
-
-    print(f"\n\n✅ Final Answer：{final_answer}")
-    logging.info(f"最终答案: {final_answer}", extra={'tag': 'FINAL_OUTPUT'})
+    logging.info(f"\n\n✅ 最终答案: {final_answer}", extra={'tag': 'FINAL_OUTPUT'})
 
 if __name__ == "__main__":
     main()

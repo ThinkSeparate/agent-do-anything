@@ -81,7 +81,7 @@ class ExecutionLoop:
                 # 6. 根据结构化的结果判断是否失败
                 is_failure = not action_result.get("success", False)
                 # 无论是结果还是错误信息，都作为观察内容
-                observation = action_result.get("result") or action_result.get("error", "")
+                observation = action_result.get("data")
 
                 if is_failure:
                     self._consecutive_failures += 1
