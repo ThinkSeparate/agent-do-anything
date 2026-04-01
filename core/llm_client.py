@@ -40,7 +40,7 @@ class LLMClient:
         # 解析响应，优先使用 reasoning_content 字段
         message = response.choices[0].message
         reasoning_content = getattr(message, 'reasoning_content', None)
-        content = reasoning_content if reasoning_content else message.content
+        content = message.content if message.content else reasoning_content
 
         # 记录使用量统计
         if hasattr(response, 'usage'):

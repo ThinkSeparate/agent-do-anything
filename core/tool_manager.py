@@ -70,10 +70,29 @@ class ToolManager:
         try:
             # execute_tool 成功时返回工具的执行结果
             result = self.execute_tool(tool_name, args)
+
+            # 确保 result 是一个字典
+            if isinstance(result, dict) and 'operation_succeeded' in result:
+                # 使用工具自己声明的操作成功状态
+                operation_succeeded = result['operation_succeeded']
+                # 将工具返回的整个结果（或其中的'data'字段）作为输出数据
+                # 这里选择传递整个结果字典，以便execution_loop能获取更丰富的信息（如returncode）
+                result_data = result
+            else:
+                # 兼容性处理：如果工具没有返回结构化结果，则视为成功，并将结果字符串化
+                self.logger.warning(f"工具 {tool_name} 未返回结构化结果，进行兼容处理。")
+                operation_succeeded = True
+                result_data = str(result)
+
+            if operation_succeeded:
+                self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
+            else:
+                self.logger.info(f"工具 {tool_name} 执行失败", extra={'tag': 'TOOL_FAILURE'})
+
             # 返回结构化成功结果
             return {
-                'success': True,
-                'data': str(result)  # 确保结果为字符串类型以便后续处理
+                'success': operation_succeeded,
+                'data': result_data
             }
         except KeyError as e:
             # 工具不存在
@@ -372,8 +391,6 @@ class ToolManager:
             
             # 执行工具
             result = tool_info['function'](*args)
-            self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
-            self.logger.debug(f"工具执行结果: {result}", extra={'tag': 'TOOL_RESULT'})
             return result
         except (ValueError, TypeError) as e:
             error_msg = (f"工具 '{tool_name}' 参数验证失败。参数: {args}。"

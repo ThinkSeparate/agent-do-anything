@@ -81,7 +81,17 @@ class ExecutionLoop:
                 # 6. 根据结构化的结果判断是否失败
                 is_failure = not action_result.get("success", False)
                 # 无论是结果还是错误信息，都作为观察内容
-                observation = action_result.get("data")
+                raw_observation = action_result.get("data")
+
+                if isinstance(raw_observation, dict):
+                    # 如果是结构化结果，提取其中的 'data' 字段作为主要信息
+                    observation = raw_observation.get('data', str(raw_observation))
+                    # 可以选择性地记录其他字段，如 returncode
+                    if 'returncode' in raw_observation:
+                        self.logger.debug(f"命令返回码: {raw_observation['returncode']}")
+                else:
+                    # 如果不是字典，保持原样（兼容旧格式或错误信息）
+                    observation = str(raw_observation)
 
                 if is_failure:
                     self._consecutive_failures += 1
