@@ -41,6 +41,8 @@ react_system_prompt_template = """
 - 如果 <action> 中的某个工具参数有多行的话，请使用 \n 来表示，如：<action>write_to_file("/tmp/test.txt", "a\nb\nc")</action>
 - 工具参数中的文件路径请使用绝对路径，不要只给出一个文件名。比如要写 write_to_file("/tmp/test.txt", "内容")，而不是 write_to_file("test.txt", "内容")\
 - 你的 <action> 必须且只能从以下工具列表中选择一个调用，工具名必须完全一致，禁止使用列表中不存在的工具（如“create_file”）
+- 当 `<observation>` 报告工具执行出错时，你必须分析错误原因，并在 `<thought>` 中调整策略（如更换工具、修正参数、使用更基础的命令验证环境）。
+- 避免在完全相同的 `<action>` 上反复失败。如果首次失败，可微调参数重试一次；若再次失败，必须更换方法。
 
 ⸻
 

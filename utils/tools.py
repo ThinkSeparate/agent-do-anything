@@ -1,10 +1,22 @@
+import os
+
 # tools.py
 class ToolSet:
     @staticmethod
     def read_file(file_path):
         """用于读取文件内容"""
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+        try:
+            # 标准化路径，处理多余的斜杠/反斜杠
+            normalized_path = os.path.normpath(file_path)
+            with open(normalized_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return f"错误：找不到文件 '{normalized_path}'。请检查路径是否正确。"
+        except OSError as e:
+            # 更清晰地返回操作系统错误
+            return f"错误：无法读取文件 '{normalized_path}'。系统报告: {e}"
+        except Exception as e:
+            return f"读取文件时发生未知错误: {e}"
 
     @staticmethod
     def write_to_file(file_path, content):

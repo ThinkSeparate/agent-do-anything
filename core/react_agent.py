@@ -23,6 +23,10 @@ class ReActAgent:
         
         # 记录代理初始化
         self.logger.info("ReActAgent 初始化开始", extra={'tag': 'AGENT_INIT'})
+
+        # === 新增：策略上下文跟踪 ===
+        self._consecutive_failures = 0  # 当前连续失败次数
+        self._max_consecutive_failures = 3  # 最大允许连续失败次数
         
         # 2. 从导入的 ToolSet 类中动态加载工具方法
         tool_methods = [
@@ -45,79 +49,116 @@ class ReActAgent:
     def run(self, user_input: str):
         # 记录用户输入
         self.logger.info(f"用户输入: {user_input}", extra={'tag': 'USER_INPUT'})
-        
-        messages = [
-            {"role": "system", "content": self.render_system_prompt(react_system_prompt_template)},
-            {"role": "user", "content": f"<question>{user_input}</question>"}
-        ]
 
-        while True:
-            # 记录发送给模型的完整消息
-            self._log_messages("发送给模型的消息", messages)
-            
-            # 请求模型
-            self.logger.info("正在向模型发送请求...", extra={'tag': 'MODEL_REQUEST'})
-            content = self.call_model(messages)
-            self.logger.info("收到模型响应", extra={'tag': 'MODEL_RESPONSE'})
-            
-            # 记录模型的完整响应内容
-            self.logger.debug(f"模型原始响应:\n{content}", extra={'tag': 'MODEL_RAW'})
+        # ========== 【修改点1：最终安全网 - 外层异常捕获】==========
+        try:
+            messages = [
+                {"role": "system", "content": self.render_system_prompt(react_system_prompt_template)},
+                {"role": "user", "content": f"<question>{user_input}</question>"}
+            ]
 
-            # 检测 Thought
-            thought_match = re.search(r"<thought>(.*?)</thought>", content, re.DOTALL)
-            if thought_match:
-                thought = thought_match.group(1)
-                self.logger.info(f"Thought: {thought}", extra={'tag': 'THOUGHT'})
+            while True:
+                # 记录发送给模型的完整消息
+                self._log_messages("发送给模型的消息", messages)
+                
+                # 请求模型
+                self.logger.info("正在向模型发送请求...", extra={'tag': 'MODEL_REQUEST'})
+                content = self.call_model(messages)
+                self.logger.info("收到模型响应", extra={'tag': 'MODEL_RESPONSE'})
+                
+                # 记录模型的完整响应内容
+                self.logger.debug(f"模型原始响应:\n{content}", extra={'tag': 'MODEL_RAW'})
 
-            # 检测模型是否输出 Final Answer，如果是的话，直接返回
-            if "<final_answer>" in content:
-                final_answer = re.search(r"<final_answer>(.*?)</final_answer>", content, re.DOTALL)
-                final_answer_text = final_answer.group(1)
-                self.logger.info(f"模型输出最终答案", extra={'tag': 'FINAL_ANSWER'})
-                self.logger.info(f"最终答案内容: {final_answer_text}", extra={'tag': 'FINAL_ANSWER'})
-                return final_answer_text
+                # 检测 Thought
+                thought_match = re.search(r"<thought>(.*?)</thought>", content, re.DOTALL)
+                if thought_match:
+                    thought = thought_match.group(1)
+                    self.logger.info(f"Thought: {thought}", extra={'tag': 'THOUGHT'})
 
-            # 检测 Action
-            action_match = re.search(r"<action>(.*?)</action>", content, re.DOTALL)
-            if not action_match:
-                error_msg = "模型未输出 <action> 标签"
-                self.logger.error(error_msg, extra={'tag': 'ERROR'})
-                raise RuntimeError(error_msg)
-            
-            action = action_match.group(1)
-            tool_name, args = self.parse_action(action)
+                # 检测模型是否输出 Final Answer，如果是的话，直接返回
+                if "<final_answer>" in content:
+                    final_answer = re.search(r"<final_answer>(.*?)</final_answer>", content, re.DOTALL)
+                    final_answer_text = final_answer.group(1)
+                    self.logger.info(f"模型输出最终答案", extra={'tag': 'FINAL_ANSWER'})
+                    self.logger.info(f"最终答案内容: {final_answer_text}", extra={'tag': 'FINAL_ANSWER'})
+                    return final_answer_text
 
-            self.logger.info(f"解析到工具调用: {tool_name}", extra={'tag': 'ACTION_PARSE'})
-            self.logger.info(f"工具参数: {args}", extra={'tag': 'ACTION_PARSE'})
-            
-            # 只有终端命令才需要询问用户，其他的工具直接执行
-            if tool_name == "run_terminal_command":
-                self.logger.warning(f"即将执行终端命令: {args[0] if args else '无参数'}", 
-                                  extra={'tag': 'TERMINAL_WARNING'})
-                should_continue = input(f"\n⚠️  即将执行终端命令: {args[0] if args else '无参数'}\n是否继续？（Y/N）")
-                if should_continue.lower() != 'y':
-                    self.logger.warning("用户取消了终端命令执行", extra={'tag': 'USER_CANCEL'})
-                    print("\n操作已取消。")
-                    return "操作被用户取消"
-            else:
-                self.logger.info(f"执行工具: {tool_name}", extra={'tag': 'TOOL_EXECUTION'})
+                # 检测 Action
+                action_match = re.search(r"<action>(.*?)</action>", content, re.DOTALL)
+                if not action_match:
+                    error_msg = "模型未输出 <action> 标签"
+                    self.logger.error(error_msg, extra={'tag': 'ERROR'})
+                    raise RuntimeError(error_msg)
+                
+                action = action_match.group(1)
+                tool_name, args = self.parse_action(action)
 
-            try:
-                observation = self.tools[tool_name](*args)
-                self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
-                self.logger.debug(f"工具执行结果: {observation}", extra={'tag': 'TOOL_RESULT'})
-            except Exception as e:
-                error_msg = f"工具执行错误：{str(e)}"
-                self.logger.error(error_msg, extra={'tag': 'TOOL_ERROR'})
-                self.logger.error(f"错误工具: {tool_name}, 参数: {args}", extra={'tag': 'TOOL_ERROR'})
-                observation = f"工具执行错误：{str(e)}：工具“{tool_name}”不存在。请从可用工具列表中选择：{list(self.tools.keys())}。"
-            
-            obs_msg = f"<observation>{observation}</observation>"
-            messages.append({"role": "user", "content": obs_msg})
-            
-            # 记录添加到消息历史中的观察结果
-            self.logger.debug(f"添加到消息历史的观察: {observation[:200]}...", 
-                            extra={'tag': 'OBSERVATION_ADDED'})
+                self.logger.info(f"解析到工具调用: {tool_name}", extra={'tag': 'ACTION_PARSE'})
+                self.logger.info(f"工具参数: {args}", extra={'tag': 'ACTION_PARSE'})
+                
+                # 只有终端命令才需要询问用户，其他的工具直接执行
+                if tool_name == "run_terminal_command":
+                    self.logger.warning(f"即将执行终端命令: {args[0] if args else '无参数'}", 
+                                    extra={'tag': 'TERMINAL_WARNING'})
+                    should_continue = input(f"\n⚠️  即将执行终端命令: {args[0] if args else '无参数'}\n是否继续？（Y/N）")
+                    if should_continue.lower() != 'y':
+                        self.logger.warning("用户取消了终端命令执行", extra={'tag': 'USER_CANCEL'})
+                        print("\n操作已取消。")
+                        return "操作被用户取消"
+                else:
+                    self.logger.info(f"执行工具: {tool_name}", extra={'tag': 'TOOL_EXECUTION'})
+
+                # 7. 执行工具并处理结果 【修改点2：策略上下文 - 增强的错误处理】
+                self.logger.info(f"调用工具: {tool_name}, 参数: {args}", extra={'tag': 'TOOL_CALL'})
+                try:
+                    observation = self.tools[tool_name](*args)
+                    self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
+                    self.logger.debug(f"工具执行结果: {observation}", extra={'tag': 'TOOL_RESULT'})
+
+                    # ===== 新增：工具成功，重置连续失败计数器 =====
+                    self._consecutive_failures = 0
+                except Exception as e:
+                    error_msg = f"工具 '{tool_name}' 执行失败。参数: {args}。错误详情: {e}"
+                    self.logger.error(error_msg, extra={'tag': 'TOOL_ERROR'})
+                    observation = f"执行工具 {tool_name} 时出错: {e}。请检查参数是否正确，或尝试其他方法。"
+
+                    # ===== 新增：策略上下文逻辑 =====
+                    # 1. 增加连续失败计数
+                    self._consecutive_failures += 1
+                    
+                    # 2. 判断是否达到连续失败阈值
+                    if self._consecutive_failures >= self._max_consecutive_failures:
+                        # 达到阈值，构建强引导恢复提示
+                        recovery_prompt = (
+                            f"\n[系统提示] 注意：当前步骤已连续失败 {self._consecutive_failures} 次。最后的错误是：{str(e)[:100]}。\n"
+                            f"你必须立即停止当前方法，在 <thought> 中彻底分析失败原因，并尝试一个完全不同的新策略。\n"
+                            f"如果无法继续，请使用 <final_answer> 报告遇到的阻塞。"
+                        )
+                        # 将恢复提示作为一条用户消息插入，引导下一轮模型思考
+                        messages.append({"role": "user", "content": recovery_prompt})
+                        self.logger.warning(f"已注入恢复提示，引导模型调整策略。", extra={'tag': 'STRATEGY_SHIFT'})
+                        
+                        # 重置计数器，并跳过将本次失败观察加入历史，直接进入下一轮循环
+                        self._consecutive_failures = 0
+                        continue
+                    else:
+                        # 未达阈值，使用原有的错误信息返回逻辑
+                        # 【注意】此处保持了您原有的错误信息格式，您可以根据之前讨论优化它
+                        observation = f"工具“{tool_name}”不存在。请从可用工具列表中选择：{list(self.tools.keys())}"
+                
+                obs_msg = f"<observation>{observation}</observation>"
+                messages.append({"role": "user", "content": obs_msg})
+                
+                # 记录添加到消息历史中的观察结果
+                self.logger.debug(f"添加到消息历史的观察: {observation[:200]}...", 
+                                extra={'tag': 'OBSERVATION_ADDED'})
+                
+        # ========== 【修改点1：最终安全网 - 异常处理块】==========
+        except Exception as e:
+            # 捕获所有未处理的异常（如RuntimeError, 模型API错误等）
+            self.logger.critical(f"任务执行过程中发生未捕获的异常: {e}", exc_info=True, extra={'tag': 'TASK_CRASH'})
+            # 返回对用户友好的错误信息，而不是让程序崩溃
+            return f"任务执行过程发生意外错误，已终止。错误类型：{type(e).__name__}"
 
     def _log_messages(self, title: str, messages: list):
         """记录消息列表的辅助方法"""
