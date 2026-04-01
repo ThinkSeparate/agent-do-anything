@@ -278,6 +278,21 @@ class ReActAgent:
             )
             
             content = response.choices[0].message.content
+
+            # === 新增：检查模型响应是否为空或无效 ===
+            if not content or content.strip() == "":
+                self.logger.warning("模型返回了空响应，准备重试...", extra={'tag': 'MODEL_RETRY'})
+                # 可以选择：1. 直接重试；2. 在消息中附加提示，要求模型必须输出标签。
+                # 这里示例为直接重试一次
+                retry_response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                )
+                content = retry_response.choices[0].message.content
+                if not content or content.strip() == "":
+                    raise RuntimeError("模型连续返回空响应，请检查API状态或提示词。")
+            # === 检查结束 ===
+
             messages.append({"role": "assistant", "content": content})
             
             # 记录 API 调用统计信息
