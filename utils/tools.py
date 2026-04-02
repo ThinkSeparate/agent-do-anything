@@ -1,6 +1,7 @@
 # utils/tools.py
 import os
 import subprocess
+from docx import Document
 
 # --- 修改：定义一个安全的、可动态获取根路径的调用器 ---
 # 默认情况下，此调用器返回 None，表示不进行安全检查。
@@ -20,6 +21,26 @@ def configure_agent_output_root(getter_func):
 # --- 修改结束 ---
 
 class ToolSet:
+    @staticmethod
+    def read_docx(file_path: str) -> str:
+        """读取 DOCX 文件并返回其纯文本内容。"""
+        doc = Document(file_path)
+        full_text = []
+        for paragraph in doc.paragraphs:
+            full_text.append(paragraph.text)
+        return {'operation_succeeded': True, 'data': "\n".join(full_text)}
+
+    @staticmethod
+    def modify_docx_paragraph(file_path: str, paragraph_index: int, new_text: str) -> str:
+        """修改 DOCX 文件中指定段落的文本。"""
+        doc = Document(file_path)
+        if 0 <= paragraph_index < len(doc.paragraphs):
+            doc.paragraphs[paragraph_index].text = new_text
+            doc.save(file_path)
+            return {'operation_succeeded': True, 'data': f"已成功更新第 {paragraph_index} 段内容。"}
+        else:
+            return {'operation_succeeded': False, 'data': f"错误：段落索引 {paragraph_index} 超出范围。"}
+    
     @staticmethod
     def read_file(file_path):
         """用于读取文件内容"""
