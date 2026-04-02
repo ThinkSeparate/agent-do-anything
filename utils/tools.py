@@ -2,6 +2,8 @@
 import os
 import subprocess
 from docx import Document
+from pptx import Presentation
+from pptx.util import Inches
 
 # --- 修改：定义一个安全的、可动态获取根路径的调用器 ---
 # 默认情况下，此调用器返回 None，表示不进行安全检查。
@@ -21,6 +23,84 @@ def configure_agent_output_root(getter_func):
 # --- 修改结束 ---
 
 class ToolSet:
+    @staticmethod
+    def create_ppt(file_path: str, title: str = "Presentation") -> dict:
+        """创建一个新的PPT文件，并添加一个标题幻灯片。"""
+        try:
+            prs = Presentation()
+            # 使用标题幻灯片布局
+            slide_layout = prs.slide_layouts[0]
+            slide = prs.slides.add_slide(slide_layout)
+            title_shape = slide.shapes.title
+            title_shape.text = title
+            prs.save(file_path)
+            return {'operation_succeeded': True, 'data': f"PPT文件已创建于 '{file_path}'，标题为 '{title}'。"}
+        except Exception as e:
+            return {'operation_succeeded': False, 'data': f"创建PPT文件时出错: {e}"}
+
+    @staticmethod
+    def add_slide_to_ppt(file_path: str, title: str = "", content: str = "") -> dict:
+        """向现有PPT文件添加一个幻灯片。"""
+        try:
+            prs = Presentation(file_path)
+            # 使用标题和内容布局（通常是第1个布局）
+            slide_layout = prs.slide_layouts[1]
+            slide = prs.slides.add_slide(slide_layout)
+            title_shape = slide.shapes.title
+            title_shape.text = title
+            content_shape = slide.placeholders[1]  # 通常是内容占位符
+            content_shape.text = content
+            prs.save(file_path)
+            return {'operation_succeeded': True, 'data': f"已向PPT文件添加幻灯片，标题: '{title}'。"}
+        except FileNotFoundError:
+            return {'operation_succeeded': False, 'data': f"错误：找不到文件 '{file_path}'。"}
+        except Exception as e:
+            return {'operation_succeeded': False, 'data': f"添加幻灯片时出错: {e}"}
+
+    @staticmethod
+    def read_ppt(file_path: str) -> dict:
+        """读取PPT文件并返回幻灯片标题和内容的文本表示。"""
+        try:
+            prs = Presentation(file_path)
+            slides_data = []
+            for i, slide in enumerate(prs.slides):
+                title = slide.shapes.title.text if slide.shapes.title else ""
+                content = ""
+                # 收集所有文本框内容（除了标题）
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape != slide.shapes.title:
+                        content += shape.text + "\n"
+                slides_data.append(f"幻灯片 {i}: 标题='{title}', 内容='{content.strip()}'")
+            return {'operation_succeeded': True, 'data': "\n".join(slides_data)}
+        except FileNotFoundError:
+            return {'operation_succeeded': False, 'data': f"错误：找不到文件 '{file_path}'。"}
+        except Exception as e:
+            return {'operation_succeeded': False, 'data': f"读取PPT文件时出错: {e}"}
+
+    @staticmethod
+    def modify_ppt_slide(file_path: str, slide_index: int, new_title: str = None, new_content: str = None) -> dict:
+        """修改指定索引的幻灯片。"""
+        try:
+            prs = Presentation(file_path)
+            if 0 <= slide_index < len(prs.slides):
+                slide = prs.slides[slide_index]
+                if new_title is not None and slide.shapes.title:
+                    slide.shapes.title.text = new_title
+                if new_content is not None:
+                    # 这里简单假设内容在第一个非标题的文本框中
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape != slide.shapes.title:
+                            shape.text = new_content
+                            break
+                prs.save(file_path)
+                return {'operation_succeeded': True, 'data': f"已成功更新第 {slide_index} 张幻灯片。"}
+            else:
+                return {'operation_succeeded': False, 'data': f"错误：幻灯片索引 {slide_index} 超出范围。"}
+        except FileNotFoundError:
+            return {'operation_succeeded': False, 'data': f"错误：找不到文件 '{file_path}'。"}
+        except Exception as e:
+            return {'operation_succeeded': False, 'data': f"修改幻灯片时出错: {e}"}
+    
     @staticmethod
     def read_docx(file_path: str) -> str:
         """读取 DOCX 文件并返回其纯文本内容。"""
