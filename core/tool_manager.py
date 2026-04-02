@@ -195,6 +195,14 @@ class ToolManager:
     def _parse_single_arg(self, arg_str: str):
         """解析单个参数字符串为Python对象。"""
         arg_str = arg_str.strip()
+
+        # 新增：处理关键字参数格式，如 title="cow"
+        keyword_match = re.match(r'^(\w+)\s*=\s*(.+)$', arg_str)
+        if keyword_match:
+            # 提取等号右边的值部分
+            value_part = keyword_match.group(2).strip()
+            # 递归解析值部分
+            return self._parse_single_arg(value_part)
         
         # 如果是字符串字面量
         if (arg_str.startswith('"') and arg_str.endswith('"')) or \
@@ -203,7 +211,6 @@ class ToolManager:
             inner_str = arg_str[1:-1]
             
             # >>>>>>>> 方案一：新增路径反斜杠保护逻辑 <<<<<<<<
-            import re
             # 定义占位符，用于临时替换需要保护的反斜杠
             BACKSLASH_PLACEHOLDER = "@@BSLASH@@"
             
