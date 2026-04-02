@@ -113,6 +113,9 @@ snake/
 # agent输出目录
 agent_output/
 
+# 打包目录
+output/
+
 # 系统文件
 Thumbs.db
 ehthumbs.db
