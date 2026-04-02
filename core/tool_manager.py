@@ -272,10 +272,9 @@ class ToolManager:
         signature = tool_info['signature']
         params = list(signature.parameters.items())
         
-        # 1. 验证参数数量
+        # 1. 验证参数数量 (这部分代码保持不变，非常重要)
         required_params = []
         optional_params = []
-        
         for param_name, param in params:
             if param_name == 'self':
                 continue
@@ -283,25 +282,21 @@ class ToolManager:
                 required_params.append(param_name)
             else:
                 optional_params.append(param_name)
-        
         min_args = len(required_params)
         max_args = len(required_params) + len(optional_params)
-        
         if len(args) < min_args:
             error_msg = (f"工具 '{tool_name}' 需要至少 {min_args} 个参数，"
                         f"但只提供了 {len(args)} 个。")
             self.logger.error(error_msg, extra={'tag': 'ARG_VALIDATION'})
             raise ValueError(error_msg)
-        
         if len(args) > max_args:
             error_msg = (f"工具 '{tool_name}' 最多接受 {max_args} 个参数，"
                         f"但提供了 {len(args)} 个。")
             self.logger.error(error_msg, extra={'tag': 'ARG_VALIDATION'})
             raise ValueError(error_msg)
         
-        # 2. 验证参数类型（如果提供了类型注解）
+        # 2. 验证参数类型 (这是需要增强的关键部分)
         type_hints = tool_info['type_hints']
-        
         for i, (arg_value, (param_name, param)) in enumerate(zip(args, params)):
             if param_name == 'self':
                 continue
@@ -309,63 +304,102 @@ class ToolManager:
             if param_name in type_hints:
                 expected_type = type_hints[param_name]
                 
-                # 跳过 Any 类型和 None
-                if expected_type == Any or expected_type is type(None):
-                    continue
-                
-                # 处理 Union 类型
-                if hasattr(expected_type, '__origin__') and expected_type.__origin__ is Union:
-                    union_types = expected_type.__args__
-                    if not any(self._check_type(arg_value, t) for t in union_types if t is not type(None)):
-                        error_msg = (f"工具 '{tool_name}' 的参数 '{param_name}' 类型不匹配。"
-                                    f"期望类型: {expected_type}，实际类型: {type(arg_value)}")
+                # 首先，如果参数值是 None，它应该能通过任何 Optional[T] 或允许 None 的 Union 类型的检查。
+                # 这是一个重要的放宽条件，因为 make_http_request 的许多参数默认为 None。
+                if arg_value is None:
+                    # 检查 expected_type 是否实际上是 Optional[X] (即 Union[X, None])
+                    # 或者本身就是 None 的类型（如 type(None)）。
+                    if (hasattr(expected_type, '__origin__') and expected_type.__origin__ is Union and type(None) in expected_type.__args__):
+                        continue  # None 是 Union 中允许的类型之一，通过验证
+                    elif expected_type is type(None):
+                        continue  # 期望类型就是 None，通过验证
+                    # 如果 expected_type 不是 Union 且不是 None，但值为 None，且参数是可选参数（有默认值），我们也应该宽松处理。
+                    # 这主要是为了兼容像 make_http_request 这样，签名是 `param: Dict = None` 但类型提示是 `Dict` 的情况。
+                    elif param.default != inspect.Parameter.empty:
+                        self.logger.warning(f"工具 '{tool_name}' 的可选参数 '{param_name}' 收到了 None 值，但类型注解未明确标记为 Optional。已放宽检查。")
+                        continue
+                    else:
+                        # 如果参数是必需的且收到了 None，而类型又不允许，则报错。
+                        error_msg = (f"工具 '{tool_name}' 的必需参数 '{param_name}' 收到了 None 值，但期望类型为: {expected_type}")
                         self.logger.error(error_msg, extra={'tag': 'ARG_VALIDATION'})
                         raise TypeError(error_msg)
-                elif not self._check_type(arg_value, expected_type):
+                
+                # 对于非 None 值，进行类型检查
+                if not self._check_type(arg_value, expected_type):
                     error_msg = (f"工具 '{tool_name}' 的参数 '{param_name}' 类型不匹配。"
-                                f"期望类型: {expected_type}，实际类型: {type(arg_value)}")
+                                f"期望类型: {expected_type}，实际类型: {type(arg_value)}， 实际值: {repr(arg_value)}")
                     self.logger.error(error_msg, extra={'tag': 'ARG_VALIDATION'})
                     raise TypeError(error_msg)
         
         self.logger.debug(f"工具 '{tool_name}' 参数验证通过: {args}", 
-                         extra={'tag': 'ARG_VALIDATION'})
-    
+                        extra={'tag': 'ARG_VALIDATION'})
+
+    # 接下来，增强 _check_type 方法，使其更稳健地处理复杂的泛型：
     def _check_type(self, value: Any, expected_type: type) -> bool:
-        """检查值是否符合期望类型（支持泛型）"""
-        # 处理 List, Dict 等泛型
-        if hasattr(expected_type, '__origin__'):
-            origin = expected_type.__origin__
-            
-            if origin is list:
-                if not isinstance(value, list):
-                    return False
-                # 检查列表元素类型
-                if expected_type.__args__:
-                    elem_type = expected_type.__args__[0]
-                    return all(self._check_type(item, elem_type) for item in value)
-                return True
-            
-            elif origin is dict:
-                if not isinstance(value, dict):
-                    return False
-                # 检查字典键值类型
-                if expected_type.__args__ and len(expected_type.__args__) == 2:
-                    key_type, val_type = expected_type.__args__
-                    return all(
-                        self._check_type(k, key_type) and self._check_type(v, val_type)
-                        for k, v in value.items()
-                    )
-                return True
-            
-            # 其他泛型暂时不深入检查
-            return isinstance(value, origin)
-        
-        # 基本类型检查
+        """检查值是否符合期望类型（支持泛型）。增强对 Union 和嵌套泛型的处理。"""
+        # 处理 typing 模块中的特殊类型，如 Any, ClassVar 等。Any 直接通过。
         if expected_type == Any:
             return True
         
-        return isinstance(value, expected_type)
-
+        # 处理 Union 类型 (包括 Optional[T] -> Union[T, None])
+        if hasattr(expected_type, '__origin__') and expected_type.__origin__ is Union:
+            union_types = expected_type.__args__
+            # 检查 value 是否符合 Union 中的任意一种非-None 类型
+            # 注意：这里递归调用 _check_type
+            for t in union_types:
+                if t is type(None) and value is None:
+                    return True
+                elif t is not type(None) and self._check_type(value, t):
+                    return True
+            return False
+        
+        # 处理 List 泛型
+        if hasattr(expected_type, '__origin__') and expected_type.__origin__ is list:
+            if not isinstance(value, list):
+                return False
+            # 如果指定了元素类型，检查列表内每个元素
+            if hasattr(expected_type, '__args__') and expected_type.__args__:
+                elem_type = expected_type.__args__[0]
+                return all(self._check_type(item, elem_type) for item in value)
+            return True  # 未指定元素类型，只要是 list 就通过
+        
+        # 处理 Dict 泛型
+        if hasattr(expected_type, '__origin__') and expected_type.__origin__ is dict:
+            if not isinstance(value, dict):
+                return False
+            # 如果指定了键和值类型，进行检查
+            if (hasattr(expected_type, '__args__') and 
+                len(expected_type.__args__) == 2):
+                key_type, val_type = expected_type.__args__
+                # 对字典的每一项进行递归类型检查
+                for k, v in value.items():
+                    if not (self._check_type(k, key_type) and self._check_type(v, val_type)):
+                        return False
+                return True
+            return True  # 未指定键值类型，只要是 dict 就通过
+        
+        # 处理其他泛型（如 Tuple, Set 等）。此处简化，只检查是否为 origin 的实例。
+        if hasattr(expected_type, '__origin__'):
+            return isinstance(value, expected_type.__origin__)
+        
+        # 基本类型检查
+        # 特别处理：Python 3.7+ 中，`dict` 和 `typing.Dict` 是等价的，但 `isinstance` 对后者会失败。
+        # 我们做一个映射。
+        type_map = {
+            Dict: dict,
+            List: list,
+            # 可根据需要添加 Tuple, Set 等
+        }
+        check_type = type_map.get(expected_type, expected_type)
+        
+        try:
+            return isinstance(value, check_type)
+        except TypeError:
+            # 如果 isinstance 检查失败（例如对 typing 模块的特殊类型），
+            # 作为后备方案，我们比较实际的类型对象。这对于简单的非泛型类型提示（如 `str`）有效。
+            # 注意：这不是一个完美的类型检查，但在动态工具调用场景中，是一个实用的妥协。
+            return type(value) is expected_type or isinstance(value, expected_type)
+    
     def execute_tool(self, tool_name: str, args: list) -> Any:
         """
         执行指定的工具，包含参数验证。
