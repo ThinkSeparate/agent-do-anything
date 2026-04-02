@@ -10,12 +10,12 @@ import os
 class LLMClient:
     """大语言模型客户端，封装所有API交互逻辑。"""
 
-    def __init__(self, model_name: str, base_url: str, api_key: str):
+    def __init__(self, model_name: str, base_url: str, api_key: str, timeout: int):
         self.logger = logging.getLogger(__name__)
         self.logger.info("LLMClient 初始化开始", extra={'tag': 'LLM_CLIENT_INIT'})
         
         self.model_name = model_name
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         
         self.logger.info(f"LLMClient 初始化完成，模型: {model_name}", 
                         extra={'tag': 'LLM_CLIENT_INIT'})

@@ -25,7 +25,7 @@ class ReActAgent:
         self.project_directory = project_directory
         
         # 0. 加载并验证必需配置
-        required_keys = ['model.api_key', 'model.base_url', 'model.name', 'agent.output_root']
+        required_keys = ['model.api_key', 'model.base_url', 'model.name', 'model.timeout', 'agent.output_root']
         config.load(required_keys=required_keys)
         
         # 从配置中读取路径。配置项 `agent.output_root` 可以是绝对路径，也可以是相对于 project_directory 的相对路径。
@@ -40,7 +40,8 @@ class ReActAgent:
         self.llm_client = LLMClient(
             model_name=config.get('model.name'),
             base_url=config.get('model.base_url'),
-            api_key=config.get('model.api_key')
+            api_key=config.get('model.api_key'),
+            timeout=config.get('model.timeout'),
         )
             
         # 4. 渲染系统提示

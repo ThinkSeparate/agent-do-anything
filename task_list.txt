@@ -1,4 +1,0 @@
-写一个贪吃蛇游戏，使用 html，css 和 js 实现，代码分别放在不同的文件中
-对三个工具分别进行一次测试
-在agent_output目录下有一份“简历.docx”，我需要把agent求职作为第一方向，帮我生成一份新的简历。修改尽可能少，不要制造不存在的工作项目经历
-读取core\tool_manager.py，帮我分析为什么我增加了两个工具，可是ToolManager仍然只能读取read_file, run_terminal_command, write_to_file这三个，告诉我答案
