@@ -140,3 +140,4 @@ Desktop.ini
 # 您可以创建一个 .env.example 文件作为模板
 # 实际的 config.yaml 文件不应提交，因为它包含敏感信息
 # 您可以创建一个 config.yaml.example 文件作为模板
+.worktrees/
