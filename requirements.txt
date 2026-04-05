@@ -1,6 +1,10 @@
-click==8.3.1
-openai==2.30.0
-python-dotenv==1.2.2
+click==8.3.2
+langchain==1.2.15
+langchain_core==1.2.26
+langchain_openai==1.1.12
+langgraph==1.1.6
 python_docx==1.2.0
 python_pptx==1.0.2
 PyYAML==6.0.3
+Requests==2.33.1
+typing_extensions==4.15.0
