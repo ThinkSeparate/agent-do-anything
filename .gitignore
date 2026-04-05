@@ -113,6 +113,9 @@ snake/
 # agent输出目录
 agent_output/
 
+# 框架测试目录
+try_framework/
+
 # 打包目录
 output/
 
