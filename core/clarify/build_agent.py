@@ -4,7 +4,7 @@ from langchain.messages import HumanMessage
 from core.common.state_define import AgentState
 from core.common.tool_node import create_tool_node
 from core.clarify.agent_logic import should_continue
-from core.clarify.model_node import create_clarify_model_node
+from core.common.model_node import create_model_node
 
 
 def build_clarify_graph(model_with_tools, system_prompt: str):
@@ -13,7 +13,7 @@ def build_clarify_graph(model_with_tools, system_prompt: str):
     图结构：START -> (clarify_model) -> (路由) -> [ ask_user工具 -> clarify_model | final_answer节点 | transfer_react节点 ] -> END
     """
     # 创建节点
-    clarify_model_node = create_clarify_model_node(model_with_tools, system_prompt)
+    clarify_model_node = create_model_node(model_with_tools, system_prompt)
     tool_node = create_tool_node()  # 用于执行ask_user等工具
 
     # 创建图构建器

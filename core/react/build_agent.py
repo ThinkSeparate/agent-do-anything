@@ -1,7 +1,7 @@
 # core/react/build_agent.py
 from langgraph.graph import StateGraph, START, END
 from core.common.state_define import AgentState
-from core.react.model_node import create_react_model_node
+from core.common.model_node import create_model_node
 from core.react.agent_logic import should_continue
 from core.common.tool_node import create_tool_node
 
@@ -18,7 +18,7 @@ def build_react_graph(model_with_tools, system_prompt: str):
         编译后的 CompiledGraph 实例
     """
     # 创建节点
-    react_model_node = create_react_model_node(model_with_tools, system_prompt)
+    react_model_node = create_model_node(model_with_tools, system_prompt)
     tool_executor = create_tool_node()
     
     # 创建一个专门处理最终答案的节点

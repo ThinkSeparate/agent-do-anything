@@ -4,9 +4,9 @@ from langchain.messages import SystemMessage, HumanMessage, AIMessage
 from core.common.state_define import AgentState
 import json
 
-def create_react_model_node(model_with_tools, system_prompt: str):
+def create_model_node(model_with_tools, system_prompt: str):
     """
-    创建 ReAct 模型调用节点。
+    创建模型调用节点。
     重构后，此节点将记录通信日志和Token消耗。
 
     Args:
