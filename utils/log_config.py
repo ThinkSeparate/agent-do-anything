@@ -2,7 +2,9 @@
 import os
 import logging
 import datetime
+import json
 from logging import Filter
+from langchain.messages import SystemMessage, HumanMessage, AIMessage
 
 def setup_logging(project_directory=None):
     """
@@ -75,23 +77,28 @@ class ConvHandler(logging.FileHandler):
         super().__init__(filename, encoding='utf-8')
         # 添加过滤器，只允许 CONV_SEND 和 CONV_RECV 通过
         self.addFilter(ConvFilter())
-        # 此Handler使用自己的格式化器，格式简单
-        self.setFormatter(logging.Formatter('%(message)s'))
+        # 此Handler使用自己的格式化器
+        self.setFormatter(ConvFormatter())
 
     def emit(self, record):
-        # 在写入前，确保消息格式符合设计要求的“块”样式
-        if record.tag == 'CONV_SEND':
-            formatted_message = self._format_conv_block("发送消息", record.message)
-        elif record.tag == 'CONV_RECV':
-            formatted_message = self._format_conv_block("模型回复", record.message)
-        else:
-            formatted_message = record.message  # 理论上不会走到这里
-        
-        # 临时替换原始消息，然后调用父类emit
-        original_msg = record.msg
-        record.msg = formatted_message
+        # 调用父类的emit，使用ConvFormatter进行格式化
         super().emit(record)
-        record.msg = original_msg  # 恢复原始消息
+
+
+class ConvFormatter(logging.Formatter):
+    """专用于对话日志的格式化器"""
+    def format(self, record):
+        # 根据标签类型添加不同的分隔块
+        if record.tag == 'CONV_SEND':
+            # 格式化消息对象
+            formatted_content = format_messages_for_log(record.msg)
+            return self._format_conv_block("发送消息", formatted_content)
+        elif record.tag == 'CONV_RECV':
+            # 格式化响应对象
+            formatted_content = get_response_content(record.msg)
+            return self._format_conv_block("模型回复", formatted_content)
+        else:
+            return record.msg  # 理论上不会走到这里，因为有ConvFilter
 
     @staticmethod
     def _format_conv_block(title, content):
@@ -112,6 +119,105 @@ class DefaultTagFilter(Filter):
         if not hasattr(record, 'tag'):
             record.tag = 'SYSTEM'
         return True
+
+
+def format_messages_for_log(messages):
+    """
+    将消息列表格式化为通信日志中易读的字符串。
+    格式：
+        [序号] 角色类型
+        内容...
+    
+    Args:
+        messages: 消息对象列表
+    
+    Returns:
+        str: 格式化后的字符串
+    """
+    formatted_lines = []
+    for i, msg in enumerate(messages, 1):
+        # 确定角色类型
+        if isinstance(msg, SystemMessage):
+            role = "system"
+        elif isinstance(msg, HumanMessage):
+            role = "human"
+        elif isinstance(msg, AIMessage):
+            role = "assistant"
+        else:
+            role = str(type(msg).__name__)
+        
+        # 获取内容
+        content = msg.content if hasattr(msg, 'content') else str(msg)
+        formatted_lines.append(f"[{i}] {role}\n{content}\n")
+    
+    return "".join(formatted_lines)
+
+
+def get_response_content(response):
+    """
+    安全地从模型响应对象中提取内容文本。
+    尝试从多个常见属性中获取，避免因属性名为空导致通信日志记录为空。
+
+    Args:
+        response: 模型调用返回的响应对象。
+
+    Returns:
+        str: 提取到的内容，如果都为空则返回提示字符串。
+    """
+    import json
+    # 优先级1: 直接获取 content 属性
+    if hasattr(response, 'content') and response.content:
+        return response.content
+    
+    # 优先级2: 尝试从 'text' 等属性获取 (兼容其他接口)
+    if hasattr(response, 'text') and response.text:
+        return response.text
+    
+    # 优先级3: 尝试获取首个 AIMessage 块的内容
+    if hasattr(response, 'message') and hasattr(response.message, 'content'):
+        return response.message.content
+    
+    # 优先级4: 如果是字典类结构，尝试获取 'text' 或 'content' 键
+    if isinstance(response, dict):
+        # 如果是字典，尝试美化为多行JSON
+        try:
+            # 尝试获取'text'或'content'键值作为主要内容
+            main_content = response.get('text') or response.get('content')
+            if main_content:
+                result = main_content + "\n\n"
+            else:
+                result = ""
+
+            # 美化整个字典并附加
+            formatted_dict = json.dumps(response, ensure_ascii=False, indent=2)
+            return result + formatted_dict
+        except (TypeError, ValueError):
+            # 如果无法序列化为JSON，则回退到字符串表示
+            pass
+    
+    # 最终回退：转换为字符串，并尝试美化结构
+    try:
+        # 尝试将响应对象转换为字典（适用于包含__dict__属性的对象）
+        if hasattr(response, '__dict__'):
+            # 转换为字典并美化
+            response_dict = response.__dict__
+            formatted_dict = json.dumps(response_dict, ensure_ascii=False, indent=2)
+            return formatted_dict
+        else:
+            # 尝试直接转换为字典（如果已经是类字典结构）
+            response_dict = dict(response) if hasattr(response, '__iter__') else str(response)
+            if isinstance(response_dict, dict):
+                formatted_dict = json.dumps(response_dict, ensure_ascii=False, indent=2)
+                return formatted_dict
+            else:
+                # 如果不是字典结构，则转换为字符串
+                content = str(response) if response is not None else ''
+                return content if content else '[模型回复内容为空或无法解析]'
+    except Exception:
+        # 如果所有转换都失败，返回字符串表示
+        content = str(response) if response is not None else ''
+        return content if content else '[模型回复内容为空或无法解析]'
+
 
 # 为根记录器添加默认标签过滤器
 root_logger = logging.getLogger()

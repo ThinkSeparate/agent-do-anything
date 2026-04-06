@@ -23,15 +23,15 @@ def create_model_node(model_with_tools, system_prompt: str):
         messages_to_send = [SystemMessage(content=system_prompt)] + state["messages"]
         
         # 2. 记录发送的完整消息到通信日志 (CONV_SEND)
-        conv_send_content = _format_messages_for_log(messages_to_send)
-        logger.debug(conv_send_content, extra={'tag': 'CONV_SEND'})
+        # 直接传递原始消息对象，由日志系统负责格式化
+        logger.debug(messages_to_send, extra={'tag': 'CONV_SEND'})
         
         # 3. 调用模型
         response = model_with_tools.invoke(messages_to_send)
         
         # 4. 记录模型回复到通信日志 (CONV_RECV)
-        response_content = _get_response_content(response)
-        logger.debug(response_content, extra={'tag': 'CONV_RECV'})
+        # 直接传递原始响应对象，由日志系统负责格式化
+        logger.debug(response, extra={'tag': 'CONV_RECV'})
         
         # 5. 记录 Token 消耗
         if hasattr(response, 'response_metadata') and 'token_usage' in response.response_metadata:
@@ -110,66 +110,10 @@ def create_model_node(model_with_tools, system_prompt: str):
         if reasoning_content:
             logger.info(f"思考过程: {reasoning_content}", extra={'tag': 'THOUGHT'})
         logger.info("收到模型响应", extra={'tag': 'MODEL_RESPONSE'})
-        logger.debug(f"模型原始响应: {response_content}", extra={'tag': 'MODEL_RAW'})
+        
+        # 记录模型原始响应（使用日志系统中的格式化函数）
+        logger.debug(f"模型原始响应: {response}", extra={'tag': 'MODEL_RAW'})
 
         return {"messages": [response]}
 
     return react_model_node
-
-
-def _format_messages_for_log(messages):
-    """
-    将消息列表格式化为通信日志中易读的字符串。
-    格式：
-        [序号] 角色类型
-        内容...
-    """
-    formatted_lines = []
-    for i, msg in enumerate(messages, 1):
-        # 确定角色类型
-        if isinstance(msg, SystemMessage):
-            role = "system"
-        elif isinstance(msg, HumanMessage):
-            role = "human"
-        elif isinstance(msg, AIMessage):
-            role = "assistant"
-        else:
-            role = str(type(msg).__name__)
-        
-        # 获取内容
-        content = msg.content if hasattr(msg, 'content') else str(msg)
-        formatted_lines.append(f"[{i}] {role}\n{content}\n")
-    
-    return "".join(formatted_lines)
-
-def _get_response_content(response):
-    """
-    安全地从模型响应对象中提取内容文本。
-    尝试从多个常见属性中获取，避免因属性名为空导致通信日志记录为空。
-    
-    Args:
-        response: 模型调用返回的响应对象。
-    
-    Returns:
-        str: 提取到的内容，如果都为空则返回提示字符串。
-    """
-    # 优先级1: 直接获取 content 属性
-    if hasattr(response, 'content') and response.content:
-        return response.content
-    
-    # 优先级2: 尝试从 'text' 等属性获取 (兼容其他接口)
-    if hasattr(response, 'text') and response.text:
-        return response.text
-    
-    # 优先级3: 尝试获取首个 AIMessage 块的内容
-    if hasattr(response, 'message') and hasattr(response.message, 'content'):
-        return response.message.content
-    
-    # 优先级4: 如果是字典类结构，尝试获取 'text' 或 'content' 键
-    if isinstance(response, dict):
-        return response.get('text') or response.get('content') or str(response)
-    
-    # 最终回退：转换为字符串
-    # 如果响应对象本身是字符串或None，或者没有可用内容，则记录一个占位符
-    content = str(response) if response is not None else ''
-    return content if content else '[模型回复内容为空或无法解析]'
