@@ -22,5 +22,15 @@ def submit_final_answer(content: str) -> str:
     return f"[任务完成] 最终答案已提交。框架处理中。\n你的最终答案 (content): {content}"
 
 
-# 将新工具也加入到工具列表中
-interactive_tools = [ask_user, submit_final_answer]
+@tool
+def transfer_to_react(clarified_task_description: str) -> str:
+    """
+    当你确认用户的需求涉及复杂的文件、系统、网络或文档操作，无法仅通过对话完成时，调用此工具。
+    这会将已澄清的、明确的任务描述转交给专业的执行Agent（ReActAgent）进行处理。
+    """
+    # 此工具在框架内的实际作用是让LangGraph图路由到“transfer_react”节点。
+    # 工具本身的返回内容不重要，重要的是触发了状态转移。
+    return f"[需求转移] 已确认此为复杂操作需求。任务描述已传递至执行Agent。\n传递的任务描述: {clarified_task_description}"
+
+# 更新 interactive_tools 列表，添加新工具
+interactive_tools = [ask_user, submit_final_answer, transfer_to_react]
