@@ -7,7 +7,7 @@ from string import Template
 from langchain.messages import HumanMessage
 
 from config.configuration import config
-from tools import all_tools, all_tools_with_think, configure_agent_output_root
+from tools import get_react_tools, configure_agent_output_root
 from core.common.model_define import create_chat_model, bind_tools_to_model
 from core.react.prompts import system_prompt_template
 from core.react.build_agent import build_react_graph
@@ -43,7 +43,7 @@ class ReActAgent:
         )
 
         # 2. 绑定工具到模型
-        self.model_with_tools = bind_tools_to_model(self.model, all_tools_with_think)
+        self.model_with_tools = bind_tools_to_model(self.model, get_react_tools())
 
         # 3. 渲染系统提示
         rendered_prompt = self.render_system_prompt(system_prompt_template)

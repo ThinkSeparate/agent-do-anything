@@ -7,7 +7,7 @@ from string import Template
 from langchain.messages import HumanMessage
 
 from config.configuration import config
-from tools import all_tools_with_think  # 需要 ask_user, submit_final_answer
+from tools import get_clarify_tools  # 需要 ask_user, submit_final_answer
 from core.common.model_define import create_chat_model, bind_tools_to_model
 from core.clarify.prompts import clarify_system_prompt_template
 from core.clarify.build_agent import build_clarify_graph
@@ -37,10 +37,8 @@ class ClarifyAgent:
             timeout=config.get('model.timeout'),
         )
 
-        # 2. 绑定工具（只需要交互类工具）
-        needed_tool_names = ['ask_user', 'submit_final_answer', 'transfer_to_react']
-        needed_tools = [tool for tool in all_tools_with_think if tool.name in needed_tool_names]
-        self.model_with_tools = bind_tools_to_model(self.model, needed_tools)
+        # 2. 绑定工具（只需要交互类工具）['ask_user', 'submit_final_answer', 'transfer_to_react']
+        self.model_with_tools = bind_tools_to_model(self.model, get_clarify_tools())
 
         # 3. 渲染系统提示
         rendered_prompt = self.render_system_prompt(clarify_system_prompt_template)
