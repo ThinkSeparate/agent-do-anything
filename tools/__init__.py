@@ -2,7 +2,7 @@
 from tools._safety import configure_agent_output_root
 from tools.file_tools import file_tools
 from tools.system_tools import system_tools
-from tools.network_tools import network_tools
+from tools.network_tools import network_tools, make_http_request
 from tools.office_tools import office_tools
 from tools.interactive_tools import general_interactive_tools
 from tools.clarify_special_tools import clarify_special_tools
@@ -13,6 +13,7 @@ __all__ = [
     'get_clarify_tools',
     'get_react_tools',
     'get_all_tools',
+    'make_http_request',
     'wrap_tool_with_think',
     'ToolRegistry',  # 新增：工具注册表类
 ]
