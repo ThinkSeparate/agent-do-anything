@@ -97,7 +97,7 @@ class ConvHandler(logging.FileHandler):
     def _format_conv_block(title, content):
         """将对话内容格式化为带标题的分隔块。"""
         separator = "=" * 30
-        return f"{separator} {title} {separator}\n{content}\n{separator} {title} {separator}\n"
+        return f"{separator} {title} {separator}\n{content}\n\n"
 
 
 class ConvFilter(Filter):
