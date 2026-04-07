@@ -15,7 +15,7 @@ def ask_user(prompt: str) -> str:
 @tool
 def submit_final_answer(content: str) -> str:
     """
-    当你确信已收集到所有必要信息，并可以回答用户最初提出的问题时，调用此工具来提交最终答案。
+    当你确信已收集到所有必要信息，并可以回答被分配的问题时，调用此工具来提交最终答案。
     """
     return f"[任务完成] 最终答案已提交。框架处理中。\n你的最终答案 (content): {content}"
 

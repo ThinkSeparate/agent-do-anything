@@ -7,23 +7,27 @@ from tools.office_tools import office_tools
 from tools.interactive_tools import general_interactive_tools
 from tools.clarify_special_tools import clarify_special_tools
 from tools.wrap_with_think import wrap_tool_with_think
+from tools.planning_tools import planning_tools
+from tools.clarify_special_tools import clarify_special_tools
 
+# 更新 __all__
 __all__ = [
     'configure_agent_output_root',
     'get_clarify_tools',
     'get_react_tools',
+    'get_plan_tools',  # 新增
     'get_all_tools',
     'make_http_request',
     'wrap_tool_with_think',
-    'ToolRegistry',  # 新增：工具注册表类
+    'ToolRegistry',
 ]
 
-# 所有原始工具（供内部使用）
+# 更新 _all_raw_tools
 _all_raw_tools = (
     file_tools + system_tools + network_tools + 
-    office_tools + general_interactive_tools + clarify_special_tools
+    office_tools + general_interactive_tools + 
+    clarify_special_tools + planning_tools  # 添加规划工具
 )
-
 
 class ToolRegistry:
     """工具注册表，管理不同Agent的工具集"""
@@ -71,19 +75,34 @@ _tool_registry.register_agent_tools(
     tool_names=["ask_user", "submit_final_answer", "transfer_to_react"]
 )
 
+
 # 执行Agent：可以使用除transfer_to_react外的所有工具
 _execution_tool_names = (
     [tool.name for tool in file_tools] +
     [tool.name for tool in system_tools] +
     [tool.name for tool in network_tools] +
     [tool.name for tool in office_tools] +
-    [tool.name for tool in general_interactive_tools]  # 不包含transfer_to_react
+    [tool.name for tool in general_interactive_tools]  # 可以问用户和提交答案
 )
 _tool_registry.register_agent_tools(
     agent_type="react",
     tool_names=_execution_tool_names
 )
 
+# 注册 Plan Agent 工具集
+_plan_tool_names = (
+    ["assign_task_to_react", "replan_tool", "submit_plan_report"] +
+    [tool.name for tool in general_interactive_tools]  # 可以问用户和提交答案
+)
+_tool_registry.register_agent_tools(
+    agent_type="plan",
+    tool_names=_plan_tool_names
+)
+
+# 新增便捷函数
+def get_plan_tools():
+    """获取规划Agent的工具集"""
+    return _tool_registry.get_agent_tools("plan")
 
 # 提供便捷的获取函数
 def get_clarify_tools():
