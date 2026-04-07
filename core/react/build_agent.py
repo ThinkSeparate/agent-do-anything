@@ -4,6 +4,7 @@ from core.common.state_define import AgentState
 from core.common.model_node import create_model_node
 from core.react.agent_logic import should_continue
 from core.common.tool_node import create_tool_node
+from tools import invoke_context_compressor
 
 
 def build_react_graph(model_with_tools, system_prompt: str):
@@ -40,6 +41,7 @@ def build_react_graph(model_with_tools, system_prompt: str):
     graph_builder.add_node("agent", react_model_node)
     graph_builder.add_node("tools", tool_executor)
     graph_builder.add_node("final_answer", final_answer_node)
+    graph_builder.add_node("compressor", invoke_context_compressor)
     
     # 添加边
     graph_builder.add_edge(START, "agent")
@@ -55,8 +57,9 @@ def build_react_graph(model_with_tools, system_prompt: str):
         }
     )
     
-    # 普通工具执行后回到agent节点
-    graph_builder.add_edge("tools", "agent")
+    # 普通工具执行后, 执行一次压缩，再回到agent节点
+    graph_builder.add_edge("tools", "compressor")
+    graph_builder.add_edge("compressor", "agent")
     
     # 最终答案工具执行后结束
     graph_builder.add_edge("final_answer", END)

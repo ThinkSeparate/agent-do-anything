@@ -116,6 +116,9 @@ agent_output/
 # 框架测试目录
 try_framework/
 
+# 文档
+docs/
+
 # 打包目录
 output/
 
