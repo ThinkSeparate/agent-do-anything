@@ -10,6 +10,7 @@ from tools.wrap_with_think import wrap_tool_with_think
 from tools.planning_tools import planning_tools
 from tools.clarify_special_tools import clarify_special_tools
 from tools.integrated_compression_tool import invoke_context_compressor
+from tools.compress_messages import compress_tools
 
 # 更新 __all__
 __all__ = [
@@ -28,7 +29,8 @@ __all__ = [
 _all_raw_tools = (
     file_tools + system_tools + network_tools +
     office_tools + general_interactive_tools +
-    clarify_special_tools + planning_tools
+    clarify_special_tools + planning_tools +
+    compress_tools
 )
 
 class ToolRegistry:
@@ -79,13 +81,14 @@ _tool_registry.register_agent_tools(
 
 
 
-# 执行Agent：可以使用除transfer_to_react外的所有工具
+# 执行React Agent：可以使用除transfer_to_react外的所有工具
 _execution_tool_names = (
     [tool.name for tool in file_tools] +
     [tool.name for tool in system_tools] +
     [tool.name for tool in network_tools] +
     [tool.name for tool in office_tools] +
-    [tool.name for tool in general_interactive_tools]  # 可以问用户和提交答案
+    [tool.name for tool in general_interactive_tools] +
+    [tool.name for tool in compress_tools]  # 可以问用户和提交答案
 )
 _tool_registry.register_agent_tools(
     agent_type="react",

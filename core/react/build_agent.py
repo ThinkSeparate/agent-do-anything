@@ -41,7 +41,7 @@ def build_react_graph(model_with_tools, system_prompt: str):
     graph_builder.add_node("agent", react_model_node)
     graph_builder.add_node("tools", tool_executor)
     graph_builder.add_node("final_answer", final_answer_node)
-    graph_builder.add_node("compressor", invoke_context_compressor)
+    # graph_builder.add_node("compressor", invoke_context_compressor)
     
     # 添加边
     graph_builder.add_edge(START, "agent")
@@ -58,8 +58,9 @@ def build_react_graph(model_with_tools, system_prompt: str):
     )
     
     # 普通工具执行后, 执行一次压缩，再回到agent节点
-    graph_builder.add_edge("tools", "compressor")
-    graph_builder.add_edge("compressor", "agent")
+    # graph_builder.add_edge("tools", "compressor")
+    # graph_builder.add_edge("compressor", "agent")
+    graph_builder.add_edge("tools", "agent")
     
     # 最终答案工具执行后结束
     graph_builder.add_edge("final_answer", END)
