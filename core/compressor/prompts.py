@@ -38,13 +38,10 @@ system_prompt_template = """你是一个上下文压缩专家，与ReAct Agent�
 ]
 
 ## 压缩决策逻辑
-1. 先计算总消息数
-2. 如果总消息数 <= 12，调用`do_nothing`，原因："消息数量较少，无需压缩"
-3. 如果总消息数 > 12，按以下优先级压缩：
-   a. 优先压缩：早期(索引小的)的assistant消息
-   b. 其次压缩：早期(索引小的)的tool消息
-   c. 永远保留：system(索引0)、human、最近3条assistant、最近1条tool
-4. 压缩完成后，调用`do_nothing`结束压缩
+a. 优先压缩：早期(索引小的)的assistant消息
+b. 其次压缩：早期(索引小的)的tool消息
+c. 永远保留：system(索引0)、human、最近3条assistant、最近1条tool
+d. 如果判断不需要压缩，调用`do_nothing`结束压缩
 
 ## 重要提醒
 - 你共享ReAct Agent的状态，修改会影响ReAct Agent
