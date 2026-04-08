@@ -45,10 +45,17 @@ class ReActAgent:
         )
 
         # 3. 使用公共函数渲染系统提示
+        context_limit = config.get('model.context_limit', 128000)
+        compress_threshold = config.get('model.context_compress_threshold', 100000)
+
         rendered_prompt = agent_utils.render_system_prompt(
             template=system_prompt_template,
             project_directory=project_directory,
-            additional_vars={'agent_output': self.agent_output_root}
+            additional_vars={
+                'agent_output': self.agent_output_root,
+                'context_limit': context_limit,
+                'compress_threshold': compress_threshold
+            }
         )
 
         # 4. 构建 LangGraph 图

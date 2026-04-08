@@ -125,6 +125,10 @@ output/
 # 复习目录
 review/
 
+# 其他需要忽略的目录
+temp_analysis/
+decompile_temp/
+
 # 系统文件
 Thumbs.db
 ehthumbs.db

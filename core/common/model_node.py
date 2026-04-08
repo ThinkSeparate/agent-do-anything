@@ -104,13 +104,23 @@ def create_model_node(model_with_tools, system_prompt: str):
             logger.debug(f"已将tool_calls内容设置为content: {tool_calls_str}",
                         extra={'tag': 'TOOL_CALLS_TO_CONTENT'})
         
-        # 7. 记录其他调试/信息日志
+        # 7. 处理模型"空响应"情况（无content且无tool_calls）
+        if not response.content or not response.content.strip():
+            if not getattr(response, 'tool_calls', None):
+                logger.warning("模型返回空响应且无工具调用，提示模型继续", extra={'tag': 'MODEL_EMPTY'})
+                # 添加提示让模型继续
+                prompt_msg = HumanMessage(
+                    content="你的上一步没有输出内容或调用工具。请继续思考并采取行动，或调用 submit_final_answer 结束任务。"
+                )
+                return {"messages": [prompt_msg]}
+
+        # 8. 记录其他调试/信息日志
         logger.info(f"发送消息数量: {len(messages_to_send)}", extra={'tag': 'MESSAGES'})
         reasoning_content = getattr(response, 'reasoning_content', None)
         if reasoning_content:
             logger.info(f"思考过程: {reasoning_content}", extra={'tag': 'THOUGHT'})
         logger.info("收到模型响应", extra={'tag': 'MODEL_RESPONSE'})
-        
+
         # 记录模型原始响应（使用日志系统中的格式化函数）
         logger.debug(f"模型原始响应: {response}", extra={'tag': 'MODEL_RAW'})
 

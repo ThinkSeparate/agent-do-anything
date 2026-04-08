@@ -33,28 +33,32 @@ def setup_logging(project_directory=None):
 
     # 3. 创建并配置【第二层：详细日志处理器 (FileHandler)】
     if project_directory:
+        # 拆分日志目录
         log_dir = os.path.join(project_directory, 'logs')
-        os.makedirs(log_dir, exist_ok=True)
-        
+        agent_log_dir = os.path.join(log_dir, 'agent')
+        conv_log_dir = os.path.join(log_dir, 'conv')
+        os.makedirs(agent_log_dir, exist_ok=True)
+        os.makedirs(conv_log_dir, exist_ok=True)
+
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        agent_log_file = os.path.join(log_dir, f'agent_{timestamp}.log')
-        
+        agent_log_file = os.path.join(agent_log_dir, f'agent_{timestamp}.log')
+
         file_formatter = AlignedFormatter(
             fmt='%(asctime)s  %(levelname)-8s  %(tag)-15s  %(message)-40s  %(filename)s:%(lineno)d',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        
+
         file_handler = logging.FileHandler(agent_log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)  # DEBUG级别及以上
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
-        
+
         # 4. 创建并配置【第三层：通信日志处理器 (ConvHandler)】
-        conv_log_file = os.path.join(log_dir, f'conv_{timestamp}.log')
+        conv_log_file = os.path.join(conv_log_dir, f'conv_{timestamp}.log')
         conv_handler = ConvHandler(conv_log_file)
         conv_handler.setLevel(logging.DEBUG)  # 处理DEBUG及以上，但由过滤器控制实际内容
         root_logger.addHandler(conv_handler)
-        
+
         # 记录日志初始化信息
         root_logger.info("日志系统初始化完成。", extra={'tag': 'LOG_INIT'})
         root_logger.info(f"详细日志文件: {agent_log_file}", extra={'tag': 'LOG_INIT'})
