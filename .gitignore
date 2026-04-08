@@ -122,6 +122,9 @@ docs/
 # 打包目录
 output/
 
+# 复习目录
+review/
+
 # 系统文件
 Thumbs.db
 ehthumbs.db

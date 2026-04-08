@@ -1,14 +1,10 @@
 # core/clarify/agent.py
-import os
-import platform
 import logging
-from string import Template
-
 from langchain.messages import HumanMessage
 
 from config.configuration import config
-from tools import get_clarify_tools  # 需要 ask_user, submit_final_answer
-from core.common.model_define import create_chat_model, bind_tools_to_model
+from tools import get_clarify_tools
+from core.common import agent_utils
 from core.clarify.prompts import clarify_system_prompt_template
 from core.clarify.build_agent import build_clarify_graph
 
@@ -22,28 +18,33 @@ class ClarifyAgent:
     def __init__(self, project_directory: str):
         self.logger = logging.getLogger(__name__)
         self.logger.info("ClarifyAgent 初始化开始", extra={'tag': 'CLARIFY_AGENT_INIT'})
-
         self.project_directory = project_directory
 
-        # 加载配置 (可以复用react agent的配置项)
+        # 1. 使用公共函数加载配置
         required_keys = ['model.api_key', 'model.base_url', 'model.name', 'model.timeout']
-        config.load(required_keys=required_keys)
-
-        # 1. 初始化模型
-        self.model = create_chat_model(
-            model_name=config.get('model.name'),
-            base_url=config.get('model.base_url'),
-            api_key=config.get('model.api_key'),
-            timeout=config.get('model.timeout'),
+        agent_utils.load_agent_config(required_keys)
+        
+        # 2. 准备模型配置
+        model_keys = {
+            'model_name': config.get('model.name'),
+            'base_url': config.get('model.base_url'),
+            'api_key': config.get('model.api_key'),
+            'timeout': config.get('model.timeout'),
+        }
+        
+        # 3. 使用公共函数创建模型（绑定工具）
+        self.model_with_tools = agent_utils.create_agent_model(
+            model_keys=model_keys,
+            tools_getter=get_clarify_tools
         )
 
-        # 2. 绑定工具（只需要交互类工具）['ask_user', 'submit_final_answer', 'transfer_to_react']
-        self.model_with_tools = bind_tools_to_model(self.model, get_clarify_tools())
+        # 4. 使用公共函数渲染系统提示
+        rendered_prompt = agent_utils.render_system_prompt(
+            template=clarify_system_prompt_template,
+            project_directory=project_directory
+        )
 
-        # 3. 渲染系统提示
-        rendered_prompt = self.render_system_prompt(clarify_system_prompt_template)
-
-        # 4. 构建澄清图
+        # 5. 构建澄清图
         self.graph = build_clarify_graph(
             model_with_tools=self.model_with_tools,
             system_prompt=rendered_prompt,
@@ -125,30 +126,3 @@ class ClarifyAgent:
                 'clarified_task': user_input,
                 'history': [],
             }
-        
-    def render_system_prompt(self, template: str) -> str:
-        """渲染系统提示模板。"""
-        import os
-        from string import Template
-        
-        # 获取文件列表
-        try:
-            files = os.listdir(self.project_directory)
-            # 只显示前10个文件
-            if len(files) > 10:
-                file_list = ", ".join(files[:10]) + f" 等 {len(files)} 个文件"
-            else:
-                file_list = ", ".join(files)
-        except:
-            file_list = "无法读取目录"
-        
-        # 操作系统信息
-        os_map = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}
-        system_name = platform.system()
-        os_name = os_map.get(system_name, "Unknown")
-        
-        return Template(template).substitute(
-            operating_system=os_name,
-            working_directory=self.project_directory,
-            file_list=file_list,
-        )

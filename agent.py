@@ -1,17 +1,17 @@
 # agent.py (修改后的主函数部分 - 直接调用 ReAct Agent)
 import os
 
-# os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8080'
-# os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:8080'
+os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8080'
+os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:8080'
 
-# # 方法2：指定mitmproxy证书路径（推荐，但需要先安装证书）
-# mitmproxy_cert_path = r"C:\Users\20785\.mitmproxy\mitmproxy-ca-cert.cer"
-# if os.path.exists(mitmproxy_cert_path):
-#     os.environ['REQUESTS_CA_BUNDLE'] = mitmproxy_cert_path
-#     os.environ['SSL_CERT_FILE'] = mitmproxy_cert_path
-# else:
-#     print(f"警告: mitmproxy证书未找到在 {mitmproxy_cert_path}")
-#     print("请访问 http://mitm.it/ 下载并安装证书")
+# 方法2：指定mitmproxy证书路径（推荐，但需要先安装证书）
+mitmproxy_cert_path = r"C:\Users\20785\.mitmproxy\mitmproxy-ca-cert.cer"
+if os.path.exists(mitmproxy_cert_path):
+    os.environ['REQUESTS_CA_BUNDLE'] = mitmproxy_cert_path
+    os.environ['SSL_CERT_FILE'] = mitmproxy_cert_path
+else:
+    print(f"警告: mitmproxy证书未找到在 {mitmproxy_cert_path}")
+    print("请访问 http://mitm.it/ 下载并安装证书")
 
 import logging
 import click

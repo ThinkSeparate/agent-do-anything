@@ -7,6 +7,7 @@ from langchain_core.messages import BaseMessage
 
 from config.configuration import config
 from core.common.model_define import create_chat_model, bind_tools_to_model
+from core.common import agent_utils
 from tools.context_compressor_tools import make_compressor_tools
 from core.compressor.prompts import system_prompt_template
 
@@ -23,7 +24,7 @@ class CompressorAgent:
         self.threshold = threshold
 
         # 加载配置
-        config.load(required_keys=['model.api_key', 'model.base_url', 'model.name', 'model.timeout'])
+        agent_utils.load_agent_config(['model.api_key', 'model.base_url', 'model.name', 'model.timeout'])
 
         # 初始化模型（仅用于压缩决策，不绑定工具）
         self.model = create_chat_model(

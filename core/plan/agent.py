@@ -1,14 +1,10 @@
 # core/plan/agent.py
-import os
-import platform
 import logging
-from string import Template
-
 from langchain.messages import HumanMessage
 
 from config.configuration import config
 from tools import get_plan_tools
-from core.common.model_define import create_chat_model, bind_tools_to_model
+from core.common import agent_utils
 from core.plan.prompts import plan_system_prompt_template
 from core.plan.build_agent import build_plan_graph
 from core.plan.state_define import PlanState
@@ -23,28 +19,33 @@ class PlanAgent:
     def __init__(self, project_directory: str):
         self.logger = logging.getLogger(__name__)
         self.logger.info("PlanAgent 初始化开始", extra={'tag': 'PLAN_AGENT_INIT'})
-
         self.project_directory = project_directory
 
-        # 加载配置
+        # 1. 使用公共函数加载配置
         required_keys = ['model.api_key', 'model.base_url', 'model.name', 'model.timeout']
-        config.load(required_keys=required_keys)
-
-        # 1. 初始化模型
-        self.model = create_chat_model(
-            model_name=config.get('model.name'),
-            base_url=config.get('model.base_url'),
-            api_key=config.get('model.api_key'),
-            timeout=config.get('model.timeout'),
+        agent_utils.load_agent_config(required_keys)
+        
+        # 2. 准备模型配置
+        model_keys = {
+            'model_name': config.get('model.name'),
+            'base_url': config.get('model.base_url'),
+            'api_key': config.get('model.api_key'),
+            'timeout': config.get('model.timeout'),
+        }
+        
+        # 3. 使用公共函数创建模型（绑定工具）
+        self.model_with_tools = agent_utils.create_agent_model(
+            model_keys=model_keys,
+            tools_getter=get_plan_tools
         )
 
-        # 2. 绑定规划工具
-        self.model_with_tools = bind_tools_to_model(self.model, get_plan_tools())
+        # 4. 使用公共函数渲染系统提示
+        rendered_prompt = agent_utils.render_system_prompt(
+            template=plan_system_prompt_template,
+            project_directory=project_directory
+        )
 
-        # 3. 渲染系统提示
-        rendered_prompt = self.render_system_prompt(plan_system_prompt_template)
-
-        # 4. 构建规划图
+        # 5. 构建规划图
         self.graph = build_plan_graph(
             model_with_tools=self.model_with_tools,
             system_prompt=rendered_prompt,
@@ -101,28 +102,3 @@ class PlanAgent:
         except Exception as e:
             self.logger.error(f"规划过程出错: {str(e)}", extra={'tag': 'PLAN_ERROR'})
             return f"规划过程发生错误: {str(e)}"
-        
-    def render_system_prompt(self, template: str) -> str:
-        """渲染系统提示模板"""
-        from string import Template
-        
-        # 获取文件列表
-        try:
-            files = os.listdir(self.project_directory)
-            if len(files) > 10:
-                file_list = ", ".join(files[:10]) + f" 等 {len(files)} 个文件"
-            else:
-                file_list = ", ".join(files)
-        except:
-            file_list = "无法读取目录"
-        
-        # 操作系统信息
-        os_map = {"Darwin": "macOS", "Windows": "Windows", "Linux": "Linux"}
-        system_name = platform.system()
-        os_name = os_map.get(system_name, "Unknown")
-        
-        return Template(template).substitute(
-            working_directory=self.project_directory,
-            file_list=file_list,
-            operating_system=os_name
-        )
