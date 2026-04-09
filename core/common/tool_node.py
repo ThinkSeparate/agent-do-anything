@@ -216,6 +216,12 @@ def create_tool_node(max_consecutive_failures: int = 3):
         current_tokens = estimate_messages_tokens(messages)
         logger.debug(f"当前消息token估算: {current_tokens}, 安全阈值: {safe_threshold}", extra={'tag': 'TOKEN_CHECK'})
 
+        # 计算历史消息中的工具调用次数（提前计算，供后续使用）
+        historical_tool_calls = 0
+        for msg in messages:
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                historical_tool_calls += len(msg.tool_calls)
+
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
             args = tool_call["args"]
@@ -330,36 +336,33 @@ def create_tool_node(max_consecutive_failures: int = 3):
                         else:
                             tool_results.append(ToolMessage(content=str(content), tool_call_id=tool_call["id"]))
                             logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
+
+                            # 检查结果大小，如果超过1000 token且已有5次以上工具调用，提示可以压缩
+                            if content_tokens > 1000 and historical_tool_calls > 5:
+                                large_result_prompt = (
+                                    f"【系统提示】上一个工具调用产生了较大的结果（约{content_tokens} token）。"
+                                    f"如果你只需要该结果的部分内容（<30%的连续片段），"
+                                    f"请使用单条压缩工具对该结果进行摘要或清空。"
+                                )
+                                tool_results.append(ToolMessage(content=large_result_prompt, tool_call_id=f"{tool_call['id']}_hint"))
+                                logger.info(f"大结果提示: 工具{tool_name}返回{content_tokens}token", extra={'tag': 'LARGE_RESULT_PROMPT'})
                     except Exception as e:
                         content = f"工具 {tool_name} 执行出错: {e}"
                         consecutive_failures += 1
                         tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
                         logger.error(content, extra={'tag': 'TOOL_FAILURE'})
 
-        # 计算历史消息中的工具调用次数
-        historical_tool_calls = 0
-        for msg in messages:
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                historical_tool_calls += len(msg.tool_calls)
+        # 压缩提示优先级管理（从高到低）：
+        # 1. Token上限（已在工具执行时检查）
+        # 2. 消息条数>=100
+        # 3. 工具调用次数（每5次）
+        # 4. 大结果提示（已在工具执行时检查，最低优先级）
 
-        # 每5次工具调用后，添加压缩提示（通过HumanMessage追加，不修改原用户消息）
         compress_prompt_msg = None
-        if historical_tool_calls % 5 == 0 and historical_tool_calls > 0:
-            # 检查是否已经有压缩提示在消息列表中，避免重复添加
-            has_compress_prompt = any(
-                isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】已进行")
-                for msg in messages
-            )
-            if not has_compress_prompt:
-                compress_prompt_msg = HumanMessage(
-                    content=f"【系统提示】已进行{historical_tool_calls}次工具调用，请评估是否需要压缩上下文"
-                )
-                logger.info(f"触发压缩评估提示(累计{historical_tool_calls}次工具调用)", extra={'tag': 'COMPRESS_PROMPT'})
-
-        # 检查消息数量，超过100条时提示压缩
         message_count = len(messages)
+
+        # 优先级2：检查消息数量，超过100条时提示压缩
         if message_count >= 100:
-            # 检查是否已经有消息数量压缩提示，避免重复添加
             has_msg_count_prompt = any(
                 isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】当前对话消息数")
                 for msg in messages
@@ -371,6 +374,18 @@ def create_tool_node(max_consecutive_failures: int = 3):
                            f"- 消息数>100：可使用 compress_paragraph 进行段落总结（更高效）"
                 )
                 logger.info(f"触发消息数量压缩提示({message_count}条消息)", extra={'tag': 'COMPRESS_MSG_COUNT'})
+
+        # 优先级3：每5次工具调用后，添加压缩提示（仅当高优先级提示未触发时）
+        elif historical_tool_calls % 5 == 0 and historical_tool_calls > 0:
+            has_compress_prompt = any(
+                isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】已进行")
+                for msg in messages
+            )
+            if not has_compress_prompt:
+                compress_prompt_msg = HumanMessage(
+                    content=f"【系统提示】已进行{historical_tool_calls}次工具调用，请评估是否需要压缩上下文"
+                )
+                logger.info(f"触发压缩评估提示(累计{historical_tool_calls}次工具调用)", extra={'tag': 'COMPRESS_PROMPT'})
 
         all_results = message_updates + tool_results
 
