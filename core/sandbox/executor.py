@@ -101,31 +101,88 @@ class SandboxExecutor:
                 policy[key] = expand_value(policy[key])
 
     def _build_command_policies(self) -> dict:
-        """构建命令策略映射表"""
+        """构建命令策略映射表（从YAML command_categories读取，并应用用户定制）"""
         policies = {}
         mode = self.policy.get('mode', 'normal')
-        cmd_policies = self.policy.get('command_policies', {})
+        categories = self.policy.get('command_categories', {})
+        custom_rules = self.policy.get('custom_rules', {})
 
-        for category, config in cmd_policies.items():
-            auto_execute_modes = config.get('auto_execute_in_modes', [])
-            require_confirm_modes = config.get('require_confirm_in_modes', [])
-            always_confirm = config.get('always_confirm', False)
+        for cat_key, cat_config in categories.items():
+            # 根据当前模式确定允许的命令（严格 ⊂ 标准 ⊂ 宽松）
+            strict_cmds = set(cat_config.get('strict', []))
+            normal_cmds = strict_cmds | set(cat_config.get('normal', []))
+            permissive_cmds = normal_cmds | set(cat_config.get('permissive', []))
+            forbidden = set(cat_config.get('forbidden', []))
 
-            for cmd in config.get('commands', []):
-                if always_confirm:
-                    auto_execute = False
-                    require_confirm = True
+            if mode == 'strict':
+                allowed = strict_cmds
+            elif mode == 'normal':
+                allowed = normal_cmds
+            else:  # permissive
+                allowed = permissive_cmds
+
+            # 应用用户定制
+            cat_custom = custom_rules.get(cat_key, {})
+            for cmd, rule in cat_custom.items():
+                if rule == 'allow':
+                    allowed.add(cmd)
+                elif rule == 'deny':
+                    allowed.discard(cmd)
+                    forbidden.add(cmd)
+
+            # 为每个命令创建策略
+            all_cmds = strict_cmds | normal_cmds | permissive_cmds | set(cat_custom.keys())
+            for cmd in all_cmds:
+                if cmd in forbidden:
+                    policies[cmd] = CommandPolicy(
+                        category=cat_key,
+                        auto_execute=False,
+                        require_confirm=True
+                    )
+                elif cmd in allowed:
+                    policies[cmd] = CommandPolicy(
+                        category=cat_key,
+                        auto_execute=True,
+                        require_confirm=False
+                    )
                 else:
-                    auto_execute = mode in auto_execute_modes
-                    require_confirm = mode in require_confirm_modes
-
-                policies[cmd] = CommandPolicy(
-                    category=category,
-                    auto_execute=auto_execute,
-                    require_confirm=require_confirm
-                )
+                    policies[cmd] = CommandPolicy(
+                        category=cat_key,
+                        auto_execute=False,
+                        require_confirm=True
+                    )
 
         return policies
+
+    def _match_command(self, user_cmd: str, policy_cmd: str) -> bool:
+        """
+        匹配用户命令与策略命令（支持通配符和前缀匹配）
+
+        匹配规则（优先级从高到低）：
+        1. 完全相等
+        2. 通配符匹配（*.py 匹配 script.py）
+        3. 前缀匹配（python 匹配 python script.py）
+        """
+        user_lower = user_cmd.lower().strip()
+        policy_lower = policy_cmd.lower().strip()
+
+        # 1. 完全相等
+        if user_lower == policy_lower:
+            return True
+
+        # 2. 通配符匹配
+        if '*' in policy_lower:
+            pattern = policy_lower.replace('*', '.*')
+            if re.match(f'^{pattern}$', user_lower):
+                return True
+
+        # 3. 前缀匹配（无参策略匹配带参命令）
+        # 策略 "python" 可以匹配 "python script.py"
+        if ' ' not in policy_lower:  # 无参策略
+            if user_lower.startswith(policy_lower + ' '):
+                return True
+
+        return False
 
     def analyze_command(self, command: str) -> Tuple[SafetyLevel, str]:
         """
@@ -136,7 +193,7 @@ class SandboxExecutor:
         """
         cmd_lower = command.lower().strip()
 
-        # 检查危险模式
+        # 检查危险模式（优先检查）
         dangerous_patterns = [
             r'rm\s+-rf\s+/',
             r'format\s+[a-z]:',
@@ -153,18 +210,27 @@ class SandboxExecutor:
             if re.search(pattern, cmd_lower):
                 return SafetyLevel.DANGEROUS, f"匹配危险模式: {pattern}"
 
-        # 提取主要命令
-        base_cmd = cmd_lower.split()[0] if cmd_lower else ''
+        # 检查完整命令是否在策略中（优先匹配更长的命令）
+        matched_policy = None
+        matched_cmd = None
+        # 按策略长度降序排序，长的优先匹配
+        sorted_policies = sorted(self.command_policies.items(), key=lambda x: len(x[0]), reverse=True)
+        for cmd_pattern, policy in sorted_policies:
+            if self._match_command(cmd_lower, cmd_pattern):
+                matched_policy = policy
+                matched_cmd = cmd_pattern
+                break  # 找到最长的匹配就停止
 
-        # 检查是否在策略中
-        if base_cmd in self.command_policies:
-            policy = self.command_policies[base_cmd]
-            if policy.require_confirm and not policy.auto_execute:
-                return SafetyLevel.DANGEROUS, f"{base_cmd} 被分类为需要确认"
-            elif policy.require_confirm:
-                return SafetyLevel.CAUTION, f"{base_cmd} 在当前模式下需要确认"
+        if matched_policy:
+            if matched_policy.require_confirm and not matched_policy.auto_execute:
+                return SafetyLevel.DANGEROUS, f"{matched_cmd} 被分类为禁止"
+            elif matched_policy.require_confirm:
+                return SafetyLevel.CAUTION, f"{matched_cmd} 在当前模式下需要确认"
             else:
-                return SafetyLevel.SAFE, f"{base_cmd} 允许自动执行"
+                return SafetyLevel.SAFE, f"{matched_cmd} 允许自动执行"
+
+        # 提取主要命令作为备选
+        base_cmd = cmd_lower.split()[0] if cmd_lower else ''
 
         # 未知命令，保守处理
         return SafetyLevel.CAUTION, f"未知命令 '{base_cmd}'，需要确认"

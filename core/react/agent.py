@@ -95,25 +95,25 @@ class ReActAgent:
 
         self.logger.info("ReActAgent 初始化完成", extra={'tag': 'AGENT_INIT'})
 
-    def run(self, user_input: str, resume_from_session_id: int = None) -> str:
+    def run(self, user_input: str, session_id: int = None, is_new: bool = True) -> str:
         """
         运行代理处理用户输入。
 
         Args:
             user_input: 用户输入的问题或指令
-            resume_from_session_id: 要恢复的历史会话ID（可选）
+            session_id: 会话ID（外层已创建）
+            is_new: 是否是新会话（False表示恢复）
 
         Returns:
             模型的最终回答文本
         """
         persistence = SessionPersistence(self.project_directory)
-        session_id = resume_from_session_id
 
         # 恢复模式
-        if resume_from_session_id:
-            self.logger.info(f"从会话 {resume_from_session_id} 恢复执行",
+        if not is_new and session_id:
+            self.logger.info(f"从会话 {session_id} 恢复执行",
                            extra={'tag': 'RESUME_SESSION'})
-            saved_state = persistence.load_state(resume_from_session_id)
+            saved_state = persistence.load_state(session_id)
             if saved_state:
                 messages = messages_from_dict(saved_state["messages"])
                 # 验证并修复消息（移除孤立的ToolMessage）
@@ -124,15 +124,16 @@ class ReActAgent:
                     "consecutive_failures": consecutive_failures,
                 }
             else:
-                self.logger.error(f"无法加载会话状态: {resume_from_session_id}")
-                return f"错误：无法恢复会话 {resume_from_session_id}"
+                self.logger.error(f"无法加载会话状态: {session_id}")
+                return f"错误：无法恢复会话 {session_id}"
         else:
-            # 新会话模式
-            self.logger.info(f"用户输入: {user_input}", extra={'tag': 'USER_INPUT'})
+            # 新会话模式（session_id 已由外层创建）
+            if not session_id:
+                self.logger.error("新会话模式需要提供 session_id", extra={'tag': 'SESSION_ERROR'})
+                return "错误：内部错误，未提供会话ID"
 
-            # 创建新会话记录
-            session_id = persistence.create_session(user_input)
-            self.logger.info(f"新会话创建: {session_id}", extra={'tag': 'SESSION_CREATED'})
+            self.logger.info(f"用户输入: {user_input}", extra={'tag': 'USER_INPUT'})
+            self.logger.info(f"使用会话: {session_id}", extra={'tag': 'SESSION_USING'})
 
             # 添加目录规范备注
             directory_note = f"""\n\n【备注】如需创建文件/目录，请优先使用 `{self.agent_output_root}` 目录，并遵守该目录下的使用规范 `directory_management_rules.md`。"""

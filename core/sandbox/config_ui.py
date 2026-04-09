@@ -60,10 +60,6 @@ class SandboxConfigUI:
             if "custom_rules" in self.policy:
                 user_policy["custom_rules"] = self.policy["custom_rules"]
 
-            # 白名单
-            if "unattended_whitelist" in self.policy:
-                user_policy["unattended_whitelist"] = self.policy["unattended_whitelist"]
-
             os.makedirs(os.path.dirname(self.user_config_file), exist_ok=True)
             with open(self.user_config_file, "w", encoding="utf-8") as f:
                 yaml.dump(
@@ -94,16 +90,19 @@ class SandboxConfigUI:
             "strict": "严格模式 - 所有命令都需要确认",
             "normal": "标准模式 - 危险命令需要确认",
             "permissive": "宽松模式 - 只有高危命令需要确认",
-            "unattended": "无人值守模式 - 白名单命令自动执行",
         }
 
         print("\n📋 当前配置:")
         print(f"   模式: {mode_desc.get(mode, mode)}")
 
-        # 显示白名单数量
-        whitelist = self.policy.get("unattended_whitelist", [])
-        if whitelist:
-            print(f"   白名单命令: {len(whitelist)} 条")
+        # 从 command_categories 计算允许的命令数量
+        categories = self.policy.get("command_categories", {})
+        total_cmds = 0
+        for cat_config in categories.values():
+            total_cmds += len(cat_config.get("strict", []))
+            total_cmds += len(cat_config.get("normal", []))
+            total_cmds += len(cat_config.get("permissive", []))
+        print(f"   允许命令: {total_cmds} 条")
 
         # 显示目录限制
         allowed_dirs = self.policy.get("allowed_directories", [])
@@ -182,24 +181,19 @@ class SandboxConfigUI:
 
     def _add_template_commands(self):
         """添加模板命令"""
-        templates = {
-            "文件查看": ["ls *", "dir *", "cat *", "head *", "tail *", "find *", "grep *"],
-            "Python": ["python *", "pip *", "python --version"],
-            "Java": ["java *", "javac *", "java -version", "javac -version"],
-            "Git": [
-                "git status",
-                "git log *",
-                "git diff *",
-                "git branch *",
-                "git add *",
-                "git commit *",
-                "git push *",
-                "git pull *",
-                "git checkout *",
-            ],
-            "文件操作": ["mkdir *", "rmdir *", "cp *", "mv *", "rm *", "copy *", "move *", "del *"],
-            "构建": ["make", "make *", "cmake *", "gradle *", "mvn *"],
-        }
+        # 从YAML读取命令分类作为模板
+        templates = {}
+        categories = self.policy.get("command_categories", {})
+        for cat_key, cat_config in categories.items():
+            cat_name = cat_config.get("name", cat_key)
+            # 合并所有模式的命令，并添加通配符
+            all_cmds = (
+                cat_config.get("strict", []) +
+                cat_config.get("normal", []) +
+                cat_config.get("permissive", [])
+            )
+            # 添加通配符版本
+            templates[cat_name] = [cmd + " *" if " " not in cmd else cmd + " *" for cmd in all_cmds[:10]]
 
         print("\n可选模板:")
         for i, (name, _) in enumerate(templates.items(), 1):
@@ -383,17 +377,6 @@ class SandboxConfigUI:
 
     def show_detailed_config(self):
         """显示详细配置对比表"""
-        # 命令类别定义
-        categories = [
-            ("文件查看", "readonly", ["ls", "dir", "cat", "head", "tail", "find", "grep", "echo", "pwd", "cd"]),
-            ("Python/pip", "readonly", ["python", "pip"]),
-            ("Java", "readonly", ["java", "javac"]),
-            ("Git操作", "write", ["git add", "git commit", "git push", "git pull", "git checkout", "git merge", "git status", "git log", "git diff", "git branch"]),
-            ("文件操作", "write", ["mkdir", "rmdir", "touch", "rm", "del", "copy", "cp", "move", "mv"]),
-            ("网络命令", "network", ["curl", "wget", "ping", "telnet", "ssh", "scp", "ftp"]),
-            ("危险命令", "dangerous", ["mkfs", "fdisk", "dd", "format", "regedit", "diskpart", "sudo", "su", "chmod 777", "chown root", "kill -9", "shutdown", "reboot"]),
-        ]
-
         while True:
             # 列宽定义（显示宽度）- 中文占2宽
             idx_width = 4   # [N] = 4宽
@@ -401,6 +384,9 @@ class SandboxConfigUI:
             mode_width = 8  # 模式列
             custom_width = 6  # 定制列
             total_width = 52  # 4列模式
+
+            # 从YAML读取命令分类
+            categories = self.policy.get("command_categories", {})
 
             # 检查哪些类别有用户定制
             custom_rules = self.policy.get("custom_rules", {})
@@ -411,7 +397,7 @@ class SandboxConfigUI:
                 'normal': '标准模式',
                 'permissive': '宽松模式'
             }.get(self.policy.get('mode', 'normal'), '标准模式')
-            print(f"📊 命令执行实际状态表 (当前模式: {mode_display})")
+            print(f"📊 命令执行策略对比表 (当前模式: {mode_display})")
             print("=" * total_width)
 
             # 表头：3种基础模式 + 定制列
@@ -424,14 +410,15 @@ class SandboxConfigUI:
             print(f"{header_idx} {header_cat} {header_strict} {header_normal} {header_permissive} {header_custom}")
             print("-" * total_width)
 
-            for i, (cat_name, cat_type, commands) in enumerate(categories, 1):
-                has_custom = "✓" if cat_name in custom_rules else ""
+            for i, (cat_key, cat_config) in enumerate(categories.items(), 1):
+                cat_name = cat_config.get('name', cat_key)
+                has_custom = "✓" if cat_key in custom_rules else ""
                 idx = self._pad(f"[{i}]", idx_width)
                 cat = self._pad(cat_name, cat_width)
                 # 计算每个模式 + 用户定制的实际结果
-                strict_status = self._get_category_actual_status(cat_name, cat_type, commands, "strict")
-                normal_status = self._get_category_actual_status(cat_name, cat_type, commands, "normal")
-                permissive_status = self._get_category_actual_status(cat_name, cat_type, commands, "permissive")
+                strict_status = self._get_category_status_for_mode(cat_key, cat_config, "strict")
+                normal_status = self._get_category_status_for_mode(cat_key, cat_config, "normal")
+                permissive_status = self._get_category_status_for_mode(cat_key, cat_config, "permissive")
                 strict = self._pad(strict_status, mode_width)
                 normal = self._pad(normal_status, mode_width)
                 permissive = self._pad(permissive_status, mode_width)
@@ -455,9 +442,10 @@ class SandboxConfigUI:
                 self._show_path_limits()
             elif choice == '9':
                 self._show_resource_limits()
-            elif choice.isdigit() and 1 <= int(choice) <= 7:
+            elif choice.isdigit() and 1 <= int(choice) <= len(categories):
                 idx = int(choice) - 1
-                self._show_category_detail(categories[idx], idx + 1)
+                cat_key = list(categories.keys())[idx]
+                self._show_category_detail(cat_key, categories[cat_key])
             else:
                 print("❌ 无效选择")
 
@@ -476,7 +464,64 @@ class SandboxConfigUI:
             "network": {"strict": "✗", "normal": "✗", "permissive": "✗"},
             "dangerous": {"strict": "✗", "normal": "✗", "permissive": "✗"},
         }
-        return symbols.get(cat_type, {"strict": "?", "normal": "?", "permissive": "?", "unattended": "?"})
+        return symbols.get(cat_type, {"strict": "?", "normal": "?", "permissive": "?"})
+
+    def _get_category_status_for_mode(self, cat_key: str, cat_config: dict, mode: str) -> str:
+        """根据YAML配置和用户定制计算类别在指定模式下的实际状态
+
+        Args:
+            cat_key: 类别键名（英文）
+            cat_config: 类别配置（包含strict/normal/permissive/forbidden）
+            mode: 模式（strict/normal/permissive）
+
+        Returns:
+            "✓" - 全部允许（所有命令都可执行）
+            "✗" - 全部禁止（所有命令都不可执行）
+            "○" - 部分允许（部分命令可执行）
+        """
+        # 获取所有唯一命令（四类加总）
+        all_cmds = set()
+        all_cmds.update(cat_config.get("strict", []))
+        all_cmds.update(cat_config.get("normal", []))
+        all_cmds.update(cat_config.get("permissive", []))
+        all_cmds.update(cat_config.get("forbidden", []))
+        total = len(all_cmds)
+
+        if total == 0:
+            return "✗"
+
+        # 计算基础模式允许数
+        strict_cmds = set(cat_config.get("strict", []))
+        normal_cmds = strict_cmds | set(cat_config.get("normal", []))
+        permissive_cmds = normal_cmds | set(cat_config.get("permissive", []))
+        forbidden = set(cat_config.get("forbidden", []))
+
+        if mode == "strict":
+            base_allowed = strict_cmds - forbidden
+        elif mode == "normal":
+            base_allowed = normal_cmds - forbidden
+        else:  # permissive
+            base_allowed = permissive_cmds - forbidden
+
+        # 加上用户定制调整
+        custom_rules = self.policy.get("custom_rules", {})
+        cat_custom = custom_rules.get(cat_key, {})
+
+        # 用户允许的命令（不在基础允许中的）
+        for cmd, rule in cat_custom.items():
+            if rule == "allow" and cmd not in base_allowed:
+                base_allowed.add(cmd)
+            elif rule == "deny" and cmd in base_allowed:
+                base_allowed.discard(cmd)
+
+        final_allowed = len(base_allowed)
+
+        if final_allowed == total:
+            return "✓"
+        elif final_allowed == 0:
+            return "✗"
+        else:
+            return "○"
 
     def _get_category_actual_status(self, cat_name: str, cat_type: str, commands: list, base_mode: str) -> str:
         """计算类别在当前模式下的实际状态
@@ -518,11 +563,11 @@ class SandboxConfigUI:
         else:
             return "○"  # 部分允许
 
-    def _get_command_status(self, cmd: str, cat_name: str, cat_type: str, base_mode: str) -> str:
+    def _get_command_status(self, cmd: str, cat_key: str, cat_config: dict, base_mode: str) -> str:
         """获取命令当前状态"""
         # 检查用户自定义
         custom_rules = self.policy.get("custom_rules", {})
-        cat_rules = custom_rules.get(cat_name, {})
+        cat_rules = custom_rules.get(cat_key, {})
         user_rule = cat_rules.get(cmd)
 
         if user_rule == "allow":
@@ -530,31 +575,61 @@ class SandboxConfigUI:
         if user_rule == "deny":
             return "[用户禁止]"
 
-        # 根据基础模式判断
-        symbols = self._get_mode_symbols(cat_type)
-        symbol = symbols.get(base_mode, "○")
+        # 根据基础模式和 YAML 配置判断
+        strict_cmds = set(cat_config.get("strict", []))
+        normal_cmds = strict_cmds | set(cat_config.get("normal", []))
+        permissive_cmds = normal_cmds | set(cat_config.get("permissive", []))
+        forbidden = set(cat_config.get("forbidden", []))
 
-        # ✓=允许, ○/✗=禁止
-        if symbol == "✓":
+        if cmd in forbidden:
+            return "[禁止]"
+
+        if base_mode == "strict":
+            allowed = strict_cmds
+        elif base_mode == "normal":
+            allowed = normal_cmds
+        else:
+            allowed = permissive_cmds
+
+        if cmd in allowed:
             return "[允许]"
         else:
             return "[禁止]"
 
-    def _show_category_detail(self, category: tuple, cat_index: int):
+    def _show_category_detail(self, category_key: str, category_config: dict):
         """显示类别详情及定制界面"""
-        cat_name, cat_type, commands = category
+        cat_key = category_key
+        cat_name = category_config.get('name', category_key)
+        cat_config = category_config
+
+        # 合并所有命令
+        commands = (
+            cat_config.get("strict", []) +
+            cat_config.get("normal", []) +
+            cat_config.get("permissive", []) +
+            cat_config.get("forbidden", [])
+        )
+        # 去重但保持顺序
+        seen = set()
+        unique_commands = []
+        for cmd in commands:
+            if cmd and cmd not in seen:
+                seen.add(cmd)
+                unique_commands.append(cmd)
+        commands = unique_commands
+
         base_mode = self.policy.get("mode", "normal")
 
         while True:
             print(f"\n{'=' * 60}")
-            print(f"📁 {cat_name} - 查看及定制")
+            print(f"📁 {cat_name} ({cat_key}) - 查看及定制")
             print(f"{'=' * 60}")
             print(f"当前模式: {base_mode}")
             print()
 
             # 显示命令列表及状态
             for i, cmd in enumerate(commands, 1):
-                status = self._get_command_status(cmd, cat_name, cat_type, base_mode)
+                status = self._get_command_status(cmd, cat_key, cat_config, base_mode)
                 print(f"{i:2d}. {cmd:<20} {status}")
 
             print(f"\n{'-' * 60}")
@@ -569,11 +644,11 @@ class SandboxConfigUI:
             if user_input.lower() == "q":
                 return
             elif user_input.lower() == "clear":
-                self._clear_category_rules(cat_name)
+                self._clear_category_rules(cat_key)
                 print(f"✅ 已清除 {cat_name} 的自定义设置")
             elif user_input.lower() in ("allow all", "deny all"):
                 action = user_input.split()[0].lower()
-                self._set_category_all(cat_name, commands, action)
+                self._set_category_all(cat_key, commands, action)
                 print(f"✅ 已设置 {cat_name} 全部{('允许' if action == 'allow' else '禁止')}")
             elif user_input.lower().startswith(("allow ", "deny ")):
                 parts = user_input.split(maxsplit=1)
@@ -584,7 +659,7 @@ class SandboxConfigUI:
                         indices = [int(x.strip()) for x in indices_str.split(",")]
                         valid_indices = [i for i in indices if 1 <= i <= len(commands)]
                         if valid_indices:
-                            self._set_commands_rules(cat_name, commands, valid_indices, action)
+                            self._set_commands_rules(cat_key, commands, valid_indices, action)
                             print(f"✅ 已设置指定命令{('允许' if action == 'allow' else '禁止')}")
                         else:
                             print("❌ 无效序号")

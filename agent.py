@@ -14,6 +14,7 @@ else:
     print("请访问 http://mitm.it/ 下载并安装证书")
 
 import logging
+from typing import Optional, Tuple
 import click
 
 from utils import setup_logging
@@ -73,10 +74,10 @@ def main(project_directory):
                         logger,
                         pending_session['original_task'],
                         pending_session['session_id'],
-                        True
+                        True,
+                        is_new=False
                     )
-                    print("\n按回车继续...")
-                    input()
+                    return
                     # 执行完成后清除未完成状态
                     has_pending = False
                     pending_session = None
@@ -115,13 +116,12 @@ def main(project_directory):
             # 处理普通任务文本
             user_query = user_input
             is_from_history = False
-            task_manager.save_task(user_query)
+            session_id = task_manager.save_task(user_query)
 
-            # 启动任务
-            _run_task(project_dir, logger, user_query, None, is_from_history)
+            # 启动任务（传入新创建的 session_id）
+            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
 
-            print("\n按回车继续...")
-            input()
+            return
 
         elif current_selection == '2':
             # 配置沙盒
@@ -131,19 +131,28 @@ def main(project_directory):
 
         elif current_selection == '3':
             # 查看历史任务
-            task = _handle_history_selection(task_manager)
-            if task:
-                user_query = task
+            result = _handle_history_selection(task_manager)
+            if result:
+                user_query, should_resume = result
                 is_from_history = True
 
-                # 检查是否有未完成的会话
-                resume_session_id = _check_resume_session(project_dir, task_manager)
+                if should_resume:
+                    # 用户选择继续执行（恢复）
+                    last_session = task_manager.get_last_session()
+                    if last_session and last_session['original_task'] == user_query:
+                        resume_session_id = last_session['session_id']
+                        print(f"\n恢复会话 {resume_session_id}...")
+                        _run_task(project_dir, logger, user_query, resume_session_id, is_from_history, is_new=False)
+                    else:
+                        # 找不到可恢复的会话，新建执行
+                        session_id = task_manager.save_task(user_query)
+                        _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
+                else:
+                    # 用户选择重新执行（新建会话）
+                    session_id = task_manager.save_task(user_query)
+                    _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
 
-                # 启动任务
-                _run_task(project_dir, logger, user_query, resume_session_id, is_from_history)
-
-                print("\n按回车继续...")
-                input()
+                return
             current_selection = '1'
 
 
@@ -200,18 +209,23 @@ def _get_sandbox_info(project_dir):
             'permissive': '宽松模式'
         }.get(mode, mode)
 
-        whitelist = policy.get('unattended_whitelist', [])
-        whitelist_count = len(whitelist)
+        # 从 command_categories 计算允许的命令数量
+        categories = policy.get('command_categories', {})
+        total_cmds = 0
+        for cat_config in categories.values():
+            total_cmds += len(cat_config.get('strict', []))
+            total_cmds += len(cat_config.get('normal', []))
+            total_cmds += len(cat_config.get('permissive', []))
 
         allowed_dirs = policy.get('allowed_directories', [])
         dirs_count = len(allowed_dirs)
 
-        return f"({mode_desc} | 命令白名单: {whitelist_count}条 | 允许路径: {dirs_count}个)"
+        return f"({mode_desc} | 允许命令: {total_cmds}条 | 允许路径: {dirs_count}个)"
     except Exception:
         return ""
 
 
-def _handle_history_selection(task_manager):
+def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
     """处理历史任务选择"""
     from datetime import datetime
 
@@ -301,14 +315,38 @@ def _handle_history_selection(task_manager):
             print(f"状态: {status}")
             print(task_content)
             print("=" * 60)
-            print("\n按回车执行该任务，按q返回")
 
-            confirm = input("> ").strip().lower()
-            if confirm == 'q':
-                continue
+            # 根据状态显示不同选项
+            if status in ('fail', 'run '):
+                print("\n该任务之前执行失败/中断，选择操作:")
+                print("  [c] 继续执行（恢复上次会话）")
+                print("  [n] 重新执行（新建会话）")
+                print("  [q] 返回")
+                print("-" * 60)
 
-            task_manager.current_task_id = task_id
-            return task_content
+                choice = input("> ").strip().lower()
+                if choice == 'q':
+                    continue
+                elif choice == 'c':
+                    # 继续执行 - 返回任务内容，由外层处理恢复
+                    task_manager.current_task_id = task_id
+                    return task_content, True  # (内容, 是否恢复)
+                elif choice == 'n':
+                    # 重新执行 - 返回任务内容，新建会话
+                    task_manager.current_task_id = task_id
+                    return task_content, False  # (内容, 不恢复)
+                else:
+                    print("无效选择，返回任务列表")
+                    continue
+            else:
+                print("\n按回车执行该任务，按q返回")
+
+                confirm = input("> ").strip().lower()
+                if confirm == 'q':
+                    continue
+
+                task_manager.current_task_id = task_id
+                return task_content, False
 
         print("无效输入，请重试")
 
@@ -343,7 +381,7 @@ def _check_resume_session(project_dir, task_manager):
     return resume_session_id
 
 
-def _run_task(project_dir, logger, user_query, resume_session_id, is_from_history):
+def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=False):
     """运行任务"""
     logger.info(f"开始处理任务 (来源: {'历史记录' if is_from_history else '新输入'})",
                 extra={'tag': 'TASK_START'})
@@ -358,7 +396,7 @@ def _run_task(project_dir, logger, user_query, resume_session_id, is_from_histor
 
     try:
         react_agent = ReActAgent(project_directory=project_dir)
-        final_report = react_agent.run(user_query, resume_from_session_id=resume_session_id)
+        final_report = react_agent.run(user_query, session_id=session_id, is_new=is_new)
         logger.info("ReAct Agent 执行完成", extra={'tag': 'REACT_END'})
 
         print("\n" + "=" * 60)
