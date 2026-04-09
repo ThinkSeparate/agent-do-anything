@@ -1,6 +1,6 @@
 # core/common/tool_node.py
 import logging
-from langchain.messages import ToolMessage, HumanMessage
+from langchain.messages import ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.messages import BaseMessage, AIMessage
 from core.common.state_define import AgentState
 from tools import tools_by_name
@@ -30,68 +30,54 @@ def create_tool_node(max_consecutive_failures: int = 3):
     """
     logger = logging.getLogger(__name__)
 
-    def execute_real_compression(messages: List[BaseMessage], operations: List[dict]) -> Tuple[List[BaseMessage], str]:
+    def execute_single_compression(messages: List[BaseMessage], operations: List[dict]) -> Tuple[List[BaseMessage], str]:
         """
-        实际执行压缩操作的函数
+        执行单条消息压缩。
 
         规则：
         1. 不删除任何消息，只替换内容
-        2. delete = 清空内容为占位符
+        2. clear = 清空内容
         3. summarize = 替换为摘要字符串
         4. 保留所有消息结构（包括 tool_calls）
-
-        Args:
-            messages: 当前消息列表
-            operations: 压缩操作策略
-
-        Returns:
-            (消息更新列表, 摘要描述字符串)
         """
         updates = []
+        valid_operations = []
 
-        # 验证和收集有效操作
-        valid_operations: List[Tuple[int, int, str, dict]] = []  # (op_idx, msg_idx, op_type, op)
+        # 验证操作
         for i, op in enumerate(operations):
-            msg_idx = op.get("message_index")
+            display_idx = op.get("message_index")
             op_type = op.get("operation")
 
-            if not isinstance(msg_idx, int):
-                logger.warning(f"压缩操作{i}：索引{msg_idx}不是整数，跳过")
+            if not isinstance(display_idx, int):
                 continue
-
             # 禁止修改系统消息(0)和用户消息(1)
-            if msg_idx == 0:
-                logger.error(f"压缩操作{i}：禁止修改系统消息(索引0)")
+            if display_idx == 0 or display_idx == 1:
+                logger.error(f"压缩操作{i}：禁止修改系统消息(0)或用户消息(1)")
                 continue
-            if msg_idx == 1:
-                logger.error(f"压缩操作{i}：禁止修改用户消息(索引1)")
+            if not (0 <= display_idx < len(messages)):
+                logger.warning(f"压缩操作{i}：索引{display_idx}越界，跳过")
+                continue
+            if op_type not in ["clear", "summarize"]:
+                continue
+            if op_type == "summarize" and not op.get("summary_text", "").strip():
                 continue
 
-            if not (0 <= msg_idx < len(messages)):
-                logger.warning(f"压缩操作{i}：索引{msg_idx}越界（范围：0-{len(messages)-1}），跳过")
-                continue
-
-            valid_operations.append((i, msg_idx, op_type, op))
-
-        # 构建摘要描述
-        compressed_indices = [msg_idx for (_, msg_idx, _, _) in valid_operations]
-        summary_desc = f"（摘要描述：对第{compressed_indices}条消息进行了压缩处理）" if compressed_indices else "（无有效压缩操作）"
+            valid_operations.append((i, display_idx, op_type, op))
 
         # 按索引从大到小处理
         valid_operations.sort(key=lambda x: x[1], reverse=True)
+        compressed_indices = []
 
-        for op_idx, msg_idx, op_type, op in valid_operations:
-            target_msg = messages[msg_idx - 1]
+        for op_idx, display_idx, op_type, op in valid_operations:
+            target_msg = messages[display_idx]
 
             try:
-                # 获取新内容
                 if op_type == "summarize":
                     summary = op.get("summary_text", "").strip()
                     new_content = summary if summary else "[摘要]"
-                else:  # delete
+                else:  # clear
                     new_content = ""
 
-                # 根据消息类型创建新消息
                 if isinstance(target_msg, ToolMessage):
                     new_msg = ToolMessage(
                         content=new_content,
@@ -99,11 +85,12 @@ def create_tool_node(max_consecutive_failures: int = 3):
                         id=target_msg.id,
                         additional_kwargs={
                             **getattr(target_msg, "additional_kwargs", {}),
-                            "original_index": msg_idx,
+                            "original_index": display_idx,
                             "compressed": True
                         }
                     )
-                    logger.info(f"压缩操作{op_idx}：索引{msg_idx} ToolMessage {'摘要' if op_type == 'summarize' else '清空'}")
+                    updates.append(new_msg)
+                    logger.info(f"单条压缩{op_idx}：索引{display_idx} ToolMessage {'摘要' if op_type == 'summarize' else '清空'}")
 
                 elif isinstance(target_msg, AIMessage):
                     new_msg = AIMessage(
@@ -112,29 +99,104 @@ def create_tool_node(max_consecutive_failures: int = 3):
                         tool_calls=getattr(target_msg, "tool_calls", None),
                         additional_kwargs={
                             **getattr(target_msg, "additional_kwargs", {}),
-                            "original_index": msg_idx,
+                            "original_index": display_idx,
                             "compressed": True
                         }
                     )
-                    logger.info(f"压缩操作{op_idx}：索引{msg_idx} AIMessage {'摘要' if op_type == 'summarize' else '清空'}")
+                    updates.append(new_msg)
+                    logger.info(f"单条压缩{op_idx}：索引{display_idx} AIMessage {'摘要' if op_type == 'summarize' else '清空'}")
 
                 else:
-                    # 其他类型（HumanMessage等）- 直接替换内容
                     target_msg.content = new_content
                     target_msg.additional_kwargs = {
                         **getattr(target_msg, "additional_kwargs", {}),
-                        "original_index": msg_idx,
+                        "original_index": display_idx,
                         "compressed": True
                     }
-                    new_msg = target_msg
-                    logger.info(f"压缩操作{op_idx}：索引{msg_idx} {type(target_msg).__name__} {'摘要' if op_type == 'summarize' else '清空'}")
+                    updates.append(target_msg)
+                    logger.info(f"单条压缩{op_idx}：索引{display_idx} {type(target_msg).__name__} {'摘要' if op_type == 'summarize' else '清空'}")
 
-                updates.append(new_msg)
+                compressed_indices.append(display_idx)
 
             except Exception as e:
-                logger.error(f"压缩操作{op_idx}执行失败: {e}")
+                logger.error(f"单条压缩操作{op_idx}执行失败: {e}")
 
+        summary_desc = f"单条压缩：{compressed_indices}" if compressed_indices else "（无有效单条压缩操作）"
         return updates, summary_desc
+
+    def execute_paragraph_compression(messages: List[BaseMessage], start_idx: int, end_idx: int, summary_text: str) -> Tuple[List[BaseMessage], str]:
+        """
+        执行段落压缩。将一段连续消息整体总结替换。
+
+        规则：
+        1. 必须成对：start_idx必须是AIMessage(tool_calls)，end_idx必须是ToolMessage
+        2. 中间消息必须交替：AIMessage(tool_calls) -> ToolMessage -> AIMessage(tool_calls) -> ToolMessage
+        3. 将范围内所有消息清空，在start_idx位置插入总结
+        4. 禁止包含系统消息(0)或用户消息(1)
+        """
+        updates = []
+
+        # 验证参数
+        if not isinstance(start_idx, int) or not isinstance(end_idx, int):
+            return [], "段落压缩失败：start_index和end_index必须是整数"
+        if not summary_text or not summary_text.strip():
+            return [], "段落压缩失败：summary不能为空"
+        # 禁止跨越系统消息(0)或用户消息(1)
+        if start_idx <= 1 or end_idx <= 1:
+            logger.error(f"段落压缩：禁止包含系统消息(0)或用户消息(1)")
+            return [], "段落压缩失败：禁止包含索引0或1"
+        if not (0 <= start_idx < len(messages) and 0 <= end_idx < len(messages)):
+            logger.warning(f"段落压缩：索引越界")
+            return [], "段落压缩失败：索引越界"
+        if start_idx >= end_idx:
+            return [], "段落压缩失败：start_index必须小于end_index"
+
+        # 验证成对约束：找出范围内所有工具相关消息（AIMessage+tool_calls 或 ToolMessage）
+        tool_related_msgs = []
+        for idx in range(start_idx, end_idx + 1):
+            msg = messages[idx]
+            is_tool_call = isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)
+            is_tool_result = isinstance(msg, ToolMessage)
+            if is_tool_call or is_tool_result:
+                tool_related_msgs.append((idx, msg, is_tool_call))
+
+        # 第一个工具相关消息必须是 AIMessage+tool_calls
+        if tool_related_msgs:
+            first_idx, first_msg, first_is_tool_call = tool_related_msgs[0]
+            if not first_is_tool_call:
+                return [], f"段落压缩失败：范围内第一个工具相关消息（索引{first_idx}）必须是AIMessage且有tool_calls"
+
+            # 最后一个工具相关消息必须是 ToolMessage
+            last_idx, last_msg, last_is_tool_call = tool_related_msgs[-1]
+            if last_is_tool_call:
+                return [], f"段落压缩失败：范围内最后一个工具相关消息（索引{last_idx}）必须是ToolMessage"
+
+        try:
+            # 1. 使用 start_idx 消息的ID创建总结消息（add_messages会替换原消息）
+            first_msg = messages[start_idx]
+            summary_msg = AIMessage(
+                content=f"[段落总结] {summary_text}",
+                id=first_msg.id,  # 使用原ID实现替换
+                additional_kwargs={
+                    **getattr(first_msg, "additional_kwargs", {}),
+                    "compressed": True,
+                    "is_paragraph_summary": True,
+                    "original_range": f"{start_idx}-{end_idx}"
+                }
+            )
+            updates.append(summary_msg)
+
+            # 2. 删除其余消息（使用 RemoveMessage）
+            for idx in range(start_idx + 1, end_idx + 1):
+                target_msg = messages[idx]
+                updates.append(RemoveMessage(id=target_msg.id))
+
+            logger.info(f"段落压缩：索引{start_idx}-{end_idx}已替换为总结")
+            return updates, f"段落压缩：{start_idx}-{end_idx}替换为总结"
+
+        except Exception as e:
+            logger.error(f"段落压缩执行失败: {e}")
+            return [], f"段落压缩失败: {e}"
 
     def tool_node(state: AgentState) -> dict:
         """执行工具调用，包含压缩处理"""
@@ -159,7 +221,7 @@ def create_tool_node(max_consecutive_failures: int = 3):
             args = tool_call["args"]
             logger.info(f"执行工具: {tool_name}, 参数: {args}", extra={'tag': 'TOOL_CALL'})
 
-            if tool_name == "compress_messages":
+            if tool_name in ["compress_message", "compress_messages"]:
                 try:
                     tool = tools_by_name.get(tool_name)
                     if tool is None:
@@ -172,18 +234,18 @@ def create_tool_node(max_consecutive_failures: int = 3):
                     operations = result.get("operations", []) if isinstance(result, dict) else []
 
                     if not operations:
-                        content = "压缩工具返回空操作列表"
+                        content = "单条压缩工具返回空操作列表"
                         tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
                         logger.warning(content, extra={'tag': 'COMPRESS_EMPTY'})
                         continue
 
-                    compression_updates, summary_desc = execute_real_compression(messages, operations)
+                    compression_updates, summary_desc = execute_single_compression(messages, operations)
 
                     if compression_updates:
                         message_updates.extend(compression_updates)
-                        logger.info(f"成功压缩 {len(compression_updates)} 条消息", extra={'tag': 'COMPRESS_SUCCESS'})
+                        logger.info(f"成功单条压缩 {len(compression_updates)} 条消息", extra={'tag': 'COMPRESS_SUCCESS'})
                     else:
-                        logger.warning("压缩操作未产生更新", extra={'tag': 'COMPRESS_NO_UPDATE'})
+                        logger.warning("单条压缩操作未产生更新", extra={'tag': 'COMPRESS_NO_UPDATE'})
 
                     tool_results.append(ToolMessage(
                         content=summary_desc,
@@ -191,10 +253,57 @@ def create_tool_node(max_consecutive_failures: int = 3):
                     ))
 
                 except Exception as e:
-                    content = f"压缩处理出错: {e}"
+                    content = f"单条压缩处理出错: {e}"
                     tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
                     consecutive_failures += 1
                     logger.error(content, extra={'tag': 'COMPRESS_FAILURE'})
+
+            elif tool_name == "compress_paragraph":
+                try:
+                    # 段落压缩限制：消息数必须超过80条才允许使用
+                    if len(messages) < 80:
+                        content = f"段落压缩拒绝：当前消息数 {len(messages)} 条，未达到 80 条的最低要求。请先使用 compress_message 进行单条压缩。"
+                        tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+                        logger.warning(f"段落压缩被拒绝：消息数{len(messages)}<80", extra={'tag': 'COMPRESS_PARAGRAPH_DENIED'})
+                        continue
+
+                    tool = tools_by_name.get(tool_name)
+                    if tool is None:
+                        content = f"工具 '{tool_name}' 不存在"
+                        tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+                        consecutive_failures += 1
+                        continue
+
+                    result = tool.invoke(args)
+                    if not isinstance(result, dict) or not result.get("valid"):
+                        content = result.get("message", "段落压缩参数无效") if isinstance(result, dict) else "段落压缩返回无效结果"
+                        tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+                        logger.warning(content, extra={'tag': 'COMPRESS_PARAGRAPH_INVALID'})
+                        continue
+
+                    compression_updates, summary_desc = execute_paragraph_compression(
+                        messages,
+                        result.get("start_index"),
+                        result.get("end_index"),
+                        result.get("summary")
+                    )
+
+                    if compression_updates:
+                        message_updates.extend(compression_updates)
+                        logger.info(f"成功段落压缩 {len(compression_updates)} 条消息", extra={'tag': 'COMPRESS_PARAGRAPH_SUCCESS'})
+                    else:
+                        logger.warning("段落压缩操作未产生更新", extra={'tag': 'COMPRESS_PARAGRAPH_NO_UPDATE'})
+
+                    tool_results.append(ToolMessage(
+                        content=summary_desc,
+                        tool_call_id=tool_call["id"]
+                    ))
+
+                except Exception as e:
+                    content = f"段落压缩处理出错: {e}"
+                    tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
+                    consecutive_failures += 1
+                    logger.error(content, extra={'tag': 'COMPRESS_PARAGRAPH_FAILURE'})
 
             else:
                 tool = tools_by_name.get(tool_name)
@@ -246,6 +355,22 @@ def create_tool_node(max_consecutive_failures: int = 3):
                     content=f"【系统提示】已进行{historical_tool_calls}次工具调用，请评估是否需要压缩上下文"
                 )
                 logger.info(f"触发压缩评估提示(累计{historical_tool_calls}次工具调用)", extra={'tag': 'COMPRESS_PROMPT'})
+
+        # 检查消息数量，超过100条时提示压缩
+        message_count = len(messages)
+        if message_count >= 100:
+            # 检查是否已经有消息数量压缩提示，避免重复添加
+            has_msg_count_prompt = any(
+                isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】当前对话消息数")
+                for msg in messages
+            )
+            if not has_msg_count_prompt:
+                compress_prompt_msg = HumanMessage(
+                    content=f"【系统提示】当前对话消息数已达{message_count}条，已超过100条。请立即调用压缩工具：\n"
+                           f"- 消息数80-100：使用 compress_message 进行单条删除/摘要\n"
+                           f"- 消息数>100：可使用 compress_paragraph 进行段落总结（更高效）"
+                )
+                logger.info(f"触发消息数量压缩提示({message_count}条消息)", extra={'tag': 'COMPRESS_MSG_COUNT'})
 
         all_results = message_updates + tool_results
 
