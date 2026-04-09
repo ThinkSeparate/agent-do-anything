@@ -143,4 +143,66 @@ def file_exists(file_path: str) -> str:
         return f"检查路径时发生错误: {e}"
 
 
-file_tools = [read_file, write_to_file, list_directory, create_directory, file_exists]
+@tool
+def move_within_output(source_path: str, destination_path: str) -> str:
+    """在 agent-output 目录内移动文件或目录。源路径和目标路径都必须在 agent-output 目录下，否则报错。"""
+    agent_output_root = get_agent_output_root()
+
+    # 如果没有配置安全目录，则禁止移动操作
+    if agent_output_root is None:
+        return "错误：未配置 agent-output 目录，无法执行移动操作。"
+
+    try:
+        source_abs = os.path.abspath(source_path)
+        dest_abs = os.path.abspath(destination_path)
+        root_abs = os.path.abspath(agent_output_root)
+    except Exception as e:
+        return f"错误：无法解析路径。系统报告: {e}"
+
+    # 检查源路径是否在 agent-output 目录下
+    source_in_safe_dir = False
+    try:
+        source_in_safe_dir = source_abs.startswith(root_abs)
+    except (ValueError, TypeError):
+        source_in_safe_dir = False
+
+    # 检查目标路径是否在 agent-output 目录下
+    dest_in_safe_dir = False
+    try:
+        dest_in_safe_dir = dest_abs.startswith(root_abs)
+    except (ValueError, TypeError):
+        dest_in_safe_dir = False
+
+    # 如果任一路径不在安全目录下，返回错误
+    if not source_in_safe_dir:
+        return f"错误：源路径 '{source_path}' 不在 agent-output 目录 '{agent_output_root}' 下，移动操作被拒绝。"
+
+    if not dest_in_safe_dir:
+        return f"错误：目标路径 '{destination_path}' 不在 agent-output 目录 '{agent_output_root}' 下，移动操作被拒绝。"
+
+    # 检查源路径是否存在
+    if not os.path.exists(source_abs):
+        return f"错误：源路径 '{source_path}' 不存在。"
+
+    # 执行移动操作
+    try:
+        # 确保目标目录存在
+        dest_parent = os.path.dirname(dest_abs)
+        if dest_parent and not os.path.exists(dest_parent):
+            os.makedirs(dest_parent, exist_ok=True)
+
+        import shutil
+        shutil.move(source_abs, dest_abs)
+
+        if os.path.isdir(dest_abs):
+            return f"目录 '{source_path}' 已成功移动到 '{destination_path}'。"
+        else:
+            return f"文件 '{source_path}' 已成功移动到 '{destination_path}'。"
+
+    except PermissionError:
+        return f"错误：没有权限移动 '{source_path}' 到 '{destination_path}'。"
+    except Exception as e:
+        return f"移动文件时发生错误: {e}"
+
+
+file_tools = [read_file, write_to_file, list_directory, create_directory, file_exists, move_within_output]
