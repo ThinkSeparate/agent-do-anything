@@ -78,9 +78,13 @@ class ReActAgent:
         """
         self.logger.info(f"用户输入: {user_input}", extra={'tag': 'USER_INPUT'})
 
+        # 添加目录规范备注
+        directory_note = f"""\n\n【备注】如需创建文件/目录，请优先使用 `{self.agent_output_root}` 目录，并遵守该目录下的使用规范 `directory_management_rules.md`。"""
+        enhanced_input = user_input + directory_note
+
         try:
             initial_state = {
-                "messages": [HumanMessage(content=user_input)],
+                "messages": [HumanMessage(content=enhanced_input)],
                 "consecutive_failures": 0,
             }
 
