@@ -34,9 +34,9 @@ def main(project_directory):
     # 实例化任务管理器
     task_manager = TaskManager(project_directory=project_dir, history_file="task_history.json")
 
-    # 检测最近的会话是否未完成
+    # 检测最近的会话是否未完成（running 或 failed）
     last_session = task_manager.get_last_session()
-    if last_session and last_session['status'] == 'run ':
+    if last_session and last_session['status'] in ('run ', 'fail'):
         print("\n" + "!"*60)
         print("检测到未完成的会话")
         print("!"*60)

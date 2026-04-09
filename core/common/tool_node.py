@@ -178,9 +178,12 @@ def create_tool_node(max_consecutive_failures: int = 3,
         try:
             # 1. 使用 start_idx 消息的ID创建总结消息（add_messages会替换原消息）
             first_msg = messages[start_idx]
+            # 段落压缩会删除范围内的所有工具调用消息对
+            # 新的总结消息不包含tool_calls，因为它代表已完成的整个段落
             summary_msg = AIMessage(
                 content=f"[段落总结] {summary_text}",
                 id=first_msg.id,  # 使用原ID实现替换
+                tool_calls=None,  # 总结消息不包含tool_calls
                 additional_kwargs={
                     **getattr(first_msg, "additional_kwargs", {}),
                     "compressed": True,
@@ -348,7 +351,8 @@ def create_tool_node(max_consecutive_failures: int = 3,
                                     f"如果你只需要该结果的部分内容（<30%的连续片段），"
                                     f"请使用单条压缩工具对该结果进行摘要或清空。"
                                 )
-                                tool_results.append(ToolMessage(content=large_result_prompt, tool_call_id=f"{tool_call['id']}_hint"))
+                                # 使用 HumanMessage 而不是 ToolMessage，因为这不是工具调用的响应
+                                tool_results.append(HumanMessage(content=large_result_prompt))
                                 logger.info(f"大结果提示: 工具{tool_name}返回{content_tokens}token", extra={'tag': 'LARGE_RESULT_PROMPT'})
                     except Exception as e:
                         content = f"工具 {tool_name} 执行出错: {e}"

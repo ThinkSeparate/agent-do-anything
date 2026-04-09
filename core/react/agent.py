@@ -1,8 +1,41 @@
 # core/react/agent.py
 import os
 import logging
-from langchain.messages import HumanMessage
+from langchain.messages import HumanMessage, ToolMessage, AIMessage
 from langchain_core.messages import messages_from_dict
+
+
+def validate_and_fix_messages(messages):
+    """
+    验证并修复消息列表，确保 ToolMessage 都有对应的 tool_calls。
+    移除孤立的 ToolMessage（没有对应 tool_call_id 的）。
+    """
+    logger = logging.getLogger(__name__)
+    fixed_messages = []
+    valid_tool_call_ids = set()
+
+    # 收集所有有效的 tool_call_id
+    for msg in messages:
+        if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+            for tc in msg.tool_calls:
+                if tc.get('id'):
+                    valid_tool_call_ids.add(tc['id'])
+
+    # 过滤消息
+    removed_count = 0
+    for i, msg in enumerate(messages):
+        if isinstance(msg, ToolMessage):
+            if not hasattr(msg, 'tool_call_id') or msg.tool_call_id not in valid_tool_call_ids:
+                logger.warning(f"移除孤立的 ToolMessage (索引{i}): {getattr(msg, 'tool_call_id', 'N/A')}",
+                             extra={'tag': 'MSG_FIX'})
+                removed_count += 1
+                continue
+        fixed_messages.append(msg)
+
+    if removed_count > 0:
+        logger.info(f"消息验证：移除了{removed_count}条孤立消息", extra={'tag': 'MSG_VALIDATED'})
+
+    return fixed_messages
 
 from config.configuration import config
 from tools import get_react_tools, configure_agent_output_root
@@ -83,6 +116,8 @@ class ReActAgent:
             saved_state = persistence.load_state(resume_from_session_id)
             if saved_state:
                 messages = messages_from_dict(saved_state["messages"])
+                # 验证并修复消息（移除孤立的ToolMessage）
+                messages = validate_and_fix_messages(messages)
                 consecutive_failures = saved_state.get("consecutive_failures", 0)
                 initial_state = {
                     "messages": messages,
