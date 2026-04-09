@@ -1,11 +1,12 @@
 # core/common/tool_node.py
 import logging
 from langchain.messages import ToolMessage, HumanMessage, RemoveMessage
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage, AIMessage, message_to_dict
 from core.common.state_define import AgentState
 from tools import tools_by_name
 from typing import List, Tuple
 from config.configuration import config
+from utils.session_persistence import SessionPersistence
 
 
 def estimate_tokens(text: str) -> int:
@@ -24,11 +25,14 @@ def estimate_messages_tokens(messages: List[BaseMessage]) -> int:
     return total
 
 
-def create_tool_node(max_consecutive_failures: int = 3):
+def create_tool_node(max_consecutive_failures: int = 3,
+                     session_id: int = None,
+                     project_directory: str = None):
     """
-    创建工具执行节点，包含压缩功能。
+    创建工具执行节点，包含压缩功能和状态持久化。
     """
     logger = logging.getLogger(__name__)
+    persistence = SessionPersistence(project_directory) if project_directory else None
 
     def execute_single_compression(messages: List[BaseMessage], operations: List[dict]) -> Tuple[List[BaseMessage], str]:
         """
@@ -401,6 +405,22 @@ def create_tool_node(max_consecutive_failures: int = 3):
             all_results.append(HumanMessage(content=recovery_prompt))
             logger.warning("已注入恢复提示", extra={'tag': 'STRATEGY_SHIFT'})
             consecutive_failures = 0
+
+        # 保存会话状态（如果启用了持久化）
+        if persistence and session_id:
+            try:
+                # 合并消息：原始消息 + 新结果
+                all_messages = messages + all_results
+                state_to_save = {
+                    "messages": [message_to_dict(m) for m in all_messages],
+                    "consecutive_failures": consecutive_failures
+                }
+                persistence.save_state(session_id, state_to_save)
+                logger.debug(f"会话状态已保存: session_id={session_id}",
+                           extra={'tag': 'STATE_SAVED'})
+            except Exception as e:
+                logger.error(f"保存会话状态失败: {e}",
+                           extra={'tag': 'STATE_SAVE_ERROR'})
 
         return {"messages": all_results, "consecutive_failures": consecutive_failures}
 

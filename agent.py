@@ -33,16 +33,80 @@ def main(project_directory):
 
     # 实例化任务管理器
     task_manager = TaskManager(project_directory=project_dir, history_file="task_history.json")
-    task_info = task_manager.get_task_input()
 
-    if not task_info or not task_info[0]:
-        logger.info("未获取到有效任务，程序退出", extra={'tag': 'APP_EXIT'})
-        return
+    # 检测最近的会话是否未完成
+    last_session = task_manager.get_last_session()
+    if last_session and last_session['status'] == 'run ':
+        print("\n" + "!"*60)
+        print("检测到未完成的会话")
+        print("!"*60)
+        print(f"会话ID: {last_session['session_id']}")
+        print(f"任务: {last_session['original_task']}")
+        print("-"*60)
+        print("选择操作:")
+        print("  [r] 恢复上次会话")
+        print("  [n] 放弃并新建任务")
+        print("!"*60)
 
-    user_query, is_from_history = task_info
+        choice = input("\n> ").strip().lower()
+        if choice == 'r':
+            # 恢复模式
+            user_query = last_session['original_task']
+            is_from_history = True
+            resume_session_id = last_session['session_id']
+            print(f"\n恢复会话 {resume_session_id}...")
+        else:
+            # 放弃，标记为失败
+            from utils.session_persistence import SessionPersistence
+            sp = SessionPersistence(project_dir)
+            sp.mark_failed(last_session['session_id'])
+            print("已放弃上次会话\n")
+            # 继续正常流程
+            task_info = task_manager.get_task_input()
+            if not task_info or not task_info[0]:
+                return
+            user_query, is_from_history = task_info
+            resume_session_id = None
+    else:
+        # 正常流程
+        task_info = task_manager.get_task_input()
+        if not task_info or not task_info[0]:
+            logger.info("未获取到有效任务，程序退出", extra={'tag': 'APP_EXIT'})
+            return
+        user_query, is_from_history = task_info
+        resume_session_id = None
+
+    # 如果是历史任务，检查状态
+    if is_from_history and task_manager.current_task_id:
+        session = task_manager.get_task_by_id(task_manager.current_task_id)
+        if session:
+            if session['status'] == 'done':
+                # 已完成，作为新任务执行（复制描述，创建新session）
+                print("\n该任务已完成，将作为新任务执行...")
+                resume_session_id = None
+                # 不修改 user_query
+            elif session['status'] in ['run ', 'fail']:
+                # 未完成，询问用户
+                print("\n" + "-"*60)
+                print(f"任务 {task_manager.current_task_id} 状态: {session['status']}")
+                print("-"*60)
+                print("选择操作:")
+                print("  [c] 继续执行（从断点恢复）")
+                print("  [r] 重新开始（创建新会话）")
+                print("-"*60)
+
+                choice = input("> ").strip().lower()
+                if choice == 'c':
+                    resume_session_id = task_manager.current_task_id
+                else:
+                    # 作为新任务执行
+                    resume_session_id = None
+                    # 可选：标记原会话为失败
+                    task_manager.persistence.mark_failed(task_manager.current_task_id)
+
     logger.info(f"开始处理任务 (来源: {'历史记录' if is_from_history else '新输入'})",
                 extra={'tag': 'TASK_START'})
-    
+
     # 直接启动 ReAct Agent（跳过需求澄清阶段）
     logger.info(f"直接启动 ReAct Agent 处理任务: {user_query}...",
                extra={'tag': 'DIRECT_REACT'})
@@ -65,7 +129,7 @@ def main(project_directory):
     # 直接实例化并运行 ReAct Agent
     try:
         react_agent = ReActAgent(project_directory=project_dir)
-        final_report = react_agent.run(user_query)
+        final_report = react_agent.run(user_query, resume_from_session_id=resume_session_id)
         logger.info("ReAct Agent 执行完成", extra={'tag': 'REACT_END'})
         
         print("\n" + "="*60)

@@ -7,20 +7,27 @@ from core.common.tool_node import create_tool_node
 from tools import invoke_context_compressor
 
 
-def build_react_graph(model_with_tools, system_prompt: str):
+def build_react_graph(model_with_tools, system_prompt: str,
+                      session_id: int = None,
+                      project_directory: str = None):
     """
     构建 ReAct Agent 的 LangGraph 图。
 
     Args:
         model_with_tools: 绑定了工具的 ChatOpenAI 实例
         system_prompt: 系统提示词
+        session_id: 会话ID（用于状态持久化）
+        project_directory: 项目目录（用于状态持久化）
 
     Returns:
         编译后的 CompiledGraph 实例
     """
     # 创建节点
     react_model_node = create_model_node(model_with_tools, system_prompt)
-    tool_executor = create_tool_node()
+    tool_executor = create_tool_node(
+        session_id=session_id,
+        project_directory=project_directory
+    )
     
     # 创建一个专门处理最终答案的节点
     def final_answer_node(state: AgentState):
