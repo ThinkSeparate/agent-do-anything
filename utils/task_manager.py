@@ -132,7 +132,7 @@ class TaskManager:
                     print(f"任务 ID {task_id} 不存在")
                     continue
 
-                # 显示任务内容并确认
+                # 显示任务内容并直接返回
                 task_content = task_record.get("original_task", "")
                 status = task_record.get("status", "unknown")
                 print("\n" + "="*60)
@@ -142,12 +142,8 @@ class TaskManager:
                 print(task_content)
                 print("="*60)
 
-                confirm = input("\n确认使用此任务？(y/n): ").strip().lower()
-                if confirm in ['y', 'yes', '是']:
-                    self.current_task_id = task_id
-                    return task_content
-                else:
-                    continue
+                self.current_task_id = task_id
+                return task_content
 
             print("无效输入，请重试")
 

@@ -1,0 +1,133 @@
+mode: permissive
+command_policies:
+  readonly:
+    auto_execute: true
+    commands:
+    - ls
+    - dir
+    - cat
+    - type
+    - head
+    - tail
+    - find
+    - grep
+    - echo
+    - pwd
+    - cd
+    - python --version
+    - pip list
+    - java -version
+    - javac -version
+    - git status
+    - git log
+    - git diff
+    - git branch
+  write:
+    require_confirm_in_modes:
+    - strict
+    - normal
+    auto_execute_in_modes:
+    - permissive
+    - unattended
+    commands:
+    - mkdir
+    - rmdir
+    - touch
+    - rm
+    - del
+    - copy
+    - cp
+    - move
+    - mv
+    - git add
+    - git commit
+    - git push
+    - git checkout
+    - git merge
+  network:
+    require_confirm_in_modes:
+    - strict
+    - normal
+    - permissive
+    auto_execute_in_modes:
+    - unattended
+    commands:
+    - curl
+    - wget
+    - ping
+    - telnet
+    - ssh
+    - scp
+    - ftp
+  dangerous:
+    always_confirm: true
+    commands:
+    - mkfs
+    - fdisk
+    - dd
+    - format
+    - regedit
+    - diskpart
+    - sudo
+    - su
+    - chmod 777
+    - chown root
+    - kill -9
+    - shutdown
+    - reboot
+allowed_directories:
+- ${PROJECT_DIR}
+- ${PROJECT_DIR}/agent_output
+- ${PROJECT_DIR}/temp
+forbidden_directories:
+- C:/Windows
+- C:/Program Files
+- C:/ProgramData
+- /etc
+- /usr/bin
+- /bin
+- ~/.ssh
+- ~/.aws
+- ~/.config
+timeouts:
+  default: 30
+  long_running: 300
+  network: 60
+resource_limits:
+  max_memory_mb: 2048
+  max_cpu_percent: 80
+  max_disk_read_mb: 100
+  max_disk_write_mb: 100
+unattended_whitelist:
+- ls *
+- dir *
+- cat *
+- head *
+- tail *
+- find *
+- grep *
+- echo *
+- pwd
+- cd *
+- mkdir *
+- rmdir *
+- python *
+- pip *
+- java *
+- javac *
+- git status
+- git log *
+- git diff *
+- git branch *
+- git add *
+- git commit *
+- git push *
+- git pull *
+- git checkout *
+- git merge *
+- copy *
+- cp *
+- move *
+- mv *
+- del *
+- rm *

@@ -17,8 +17,10 @@ import logging
 import click
 
 from utils import setup_logging
-from core.react.agent import ReActAgent  # 直接导入 ReAct Agent
+from core.react.agent import ReActAgent
 from utils.task_manager import TaskManager
+from core.sandbox.config_ui import quick_setup_sandbox, show_sandbox_status
+
 
 @click.command()
 @click.argument('project_directory',
@@ -34,113 +36,341 @@ def main(project_directory):
     # 实例化任务管理器
     task_manager = TaskManager(project_directory=project_dir, history_file="task_history.json")
 
-    # 检测最近的会话是否未完成（running 或 failed）
+    # 检测是否有未完成的会话
+    pending_session = task_manager.get_last_session()
+    has_pending = pending_session and pending_session['status'] in ('run ', 'fail')
+
+    # 当前选中选项
+    current_selection = '1'
+
+    while True:
+        if current_selection == '1':
+            # 任务模式
+            _show_main_menu(has_pending, pending_session, project_dir)
+
+            user_input = input("> ").strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() == 'q':
+                print("\n程序已退出")
+                return
+
+            # 处理选项切换
+            if has_pending:
+                # 有未完成会话时的选项映射
+                if user_input == '2':
+                    current_selection = '2'
+                    continue
+                elif user_input == '3':
+                    current_selection = '3'
+                    continue
+                elif user_input == '4':
+                    # 恢复未完成会话
+                    _run_task(
+                        project_dir,
+                        logger,
+                        pending_session['original_task'],
+                        pending_session['session_id'],
+                        True
+                    )
+                    print("\n按回车继续...")
+                    input()
+                    # 执行完成后清除未完成状态
+                    has_pending = False
+                    pending_session = None
+                    continue
+                elif user_input == '5':
+                    # 放弃未完成会话
+                    from utils.session_persistence import SessionPersistence
+                    sp = SessionPersistence(project_dir)
+                    sp.mark_failed(pending_session['session_id'])
+                    print(f"\n已放弃会话 {pending_session['session_id']}")
+                    has_pending = False
+                    pending_session = None
+                    continue
+                elif user_input == '1':
+                    # 已在任务模式，提示用户直接输入任务
+                    print("\nℹ️ 已在任务模式，直接输入任务描述后回车即可执行")
+                    print("   或输入 2/3 切换到其他功能\n")
+                    continue
+                else:
+                    # 普通任务文本
+                    pass
+            else:
+                # 无未完成会话时的选项映射
+                if user_input == '2':
+                    current_selection = '2'
+                    continue
+                elif user_input == '3':
+                    current_selection = '3'
+                    continue
+                elif user_input == '1':
+                    # 已在任务模式，提示用户直接输入任务
+                    print("\nℹ️ 已在任务模式，直接输入任务描述后回车即可执行")
+                    print("   或输入 2/3 切换到其他功能\n")
+                    continue
+
+            # 处理普通任务文本
+            user_query = user_input
+            is_from_history = False
+            task_manager.save_task(user_query)
+
+            # 启动任务
+            _run_task(project_dir, logger, user_query, None, is_from_history)
+
+            print("\n按回车继续...")
+            input()
+
+        elif current_selection == '2':
+            # 配置沙盒
+            print("\n进入沙盒配置...")
+            quick_setup_sandbox(project_dir)
+            current_selection = '1'
+
+        elif current_selection == '3':
+            # 查看历史任务
+            task = _handle_history_selection(task_manager)
+            if task:
+                user_query = task
+                is_from_history = True
+
+                # 检查是否有未完成的会话
+                resume_session_id = _check_resume_session(project_dir, task_manager)
+
+                # 启动任务
+                _run_task(project_dir, logger, user_query, resume_session_id, is_from_history)
+
+                print("\n按回车继续...")
+                input()
+            current_selection = '1'
+
+
+def _show_main_menu(has_pending, pending_session, project_dir):
+    """显示主菜单"""
+    print("\n" + "=" * 60)
+
+    # 获取沙盒配置信息
+    sandbox_info = _get_sandbox_info(project_dir)
+
+    if has_pending and pending_session:
+        print("🔔 检测到未完成的会话")
+        print("=" * 60)
+        print(f"会话ID: {pending_session['session_id']} | 状态: {pending_session['status']}")
+        # 截取任务描述，避免过长
+        task_preview = pending_session['original_task']
+        if len(task_preview) > 100:
+            task_preview = task_preview[:97] + "..."
+        print(f"任务: {task_preview}")
+        print("-" * 60)
+        print("操作选项（输入数字选择功能，q 退出，直接输入文本后回车执行任务）：")
+        print("  [1] 开始新任务 （当前选项）")
+        print(f"  [2] 🔒 配置沙盒安全策略 {sandbox_info}")
+        print("  [3] 📋 查看历史任务")
+        print("  [4] 🔄 恢复此会话并继续执行")
+        print("  [5] ❌ 放弃此会话")
+        print("  [q] 退出")
+    else:
+        print("操作选项（输入数字选择功能，q 退出，直接输入文本后回车执行任务）：")
+        print("  [1] 开始任务 （当前选项）")
+        print(f"  [2] 🔒 配置沙盒安全策略 {sandbox_info}")
+        print("  [3] 📋 查看历史任务")
+        print("  [q] 退出")
+
+    print("-" * 60)
+
+
+def _get_sandbox_info(project_dir):
+    """获取沙盒配置信息字符串"""
+    try:
+        import yaml
+        policy_file = os.path.join(project_dir, "config", "sandbox_policy.yaml")
+
+        if not os.path.exists(policy_file):
+            return ""
+
+        with open(policy_file, 'r', encoding='utf-8') as f:
+            policy = yaml.safe_load(f) or {}
+
+        mode = policy.get('mode', 'normal')
+        mode_desc = {
+            'strict': '严格模式',
+            'normal': '标准模式',
+            'permissive': '宽松模式'
+        }.get(mode, mode)
+
+        whitelist = policy.get('unattended_whitelist', [])
+        whitelist_count = len(whitelist)
+
+        allowed_dirs = policy.get('allowed_directories', [])
+        dirs_count = len(allowed_dirs)
+
+        return f"({mode_desc} | 命令白名单: {whitelist_count}条 | 允许路径: {dirs_count}个)"
+    except Exception:
+        return ""
+
+
+def _handle_history_selection(task_manager):
+    """处理历史任务选择"""
+    from datetime import datetime
+
+    total_count = task_manager.persistence.get_total_session_count()
+    if total_count == 0:
+        print("暂无历史任务")
+        return None
+
+    page_size = 20
+    offset = max(0, total_count - page_size)
+
+    while True:
+        tasks = task_manager.persistence.list_sessions(limit=page_size, offset=offset)
+
+        if tasks:
+            start_id = tasks[0].get("session_id", "N/A") if tasks else "N/A"
+            end_id = tasks[-1].get("session_id", "N/A") if tasks else "N/A"
+
+            print("\n" + "=" * 80)
+            print(f"历史任务列表 (共{total_count}个，显示ID {start_id}-{end_id})")
+            print("=" * 80)
+
+            for task_record in tasks:
+                task_id = task_record.get("session_id", "N/A")
+                task_content = task_record.get("original_task", "")
+                status = task_record.get("status", "unknown")
+                created_at = task_record.get("created_at", "")
+
+                time_str = "未知时间"
+                if created_at:
+                    try:
+                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        time_str = dt.strftime("%m-%d %H:%M")
+                    except:
+                        pass
+
+                preview = task_content[:60] + "..." if len(task_content) > 60 else task_content
+                status_word = status[:4] if len(status) >= 4 else status.ljust(4)
+
+                print(f"[{task_id:3d}] [{status_word}] [{time_str}] {preview}")
+
+            print("=" * 80)
+        else:
+            print("暂无历史任务")
+            return None
+
+        print("\n" + "-" * 60)
+        print("操作:")
+        print("  [编号] 输入编号查看任务详情")
+        if offset > 0:
+            print("  [p] 向上翻页（查看更早的）")
+        if offset + page_size < total_count:
+            print("  [n] 向下翻页（查看更新的）")
+        print("  [q] 返回")
+        print("-" * 60)
+
+        choice = input("> ").strip()
+
+        if not choice:
+            continue
+
+        if choice.lower() == 'q':
+            return None
+
+        if choice.lower() == 'p' and offset > 0:
+            offset = max(0, offset - page_size)
+            continue
+
+        if choice.lower() == 'n' and offset + page_size < total_count:
+            offset = min(total_count - page_size, offset + page_size)
+            continue
+
+        if choice.isdigit():
+            task_id = int(choice)
+            task_record = task_manager.get_task_by_id(task_id)
+
+            if not task_record:
+                print(f"任务 ID {task_id} 不存在")
+                continue
+
+            task_content = task_record.get("original_task", "")
+            status = task_record.get("status", "unknown")
+
+            print("\n" + "=" * 60)
+            print(f"历史任务 {task_id}:")
+            print("=" * 60)
+            print(f"状态: {status}")
+            print(task_content)
+            print("=" * 60)
+            print("\n按回车执行该任务，按q返回")
+
+            confirm = input("> ").strip().lower()
+            if confirm == 'q':
+                continue
+
+            task_manager.current_task_id = task_id
+            return task_content
+
+        print("无效输入，请重试")
+
+
+def _check_resume_session(project_dir, task_manager):
+    """检查是否有未完成的会话，询问用户是否恢复"""
     last_session = task_manager.get_last_session()
+    resume_session_id = None
+
     if last_session and last_session['status'] in ('run ', 'fail'):
-        print("\n" + "!"*60)
+        print("\n" + "!" * 60)
         print("检测到未完成的会话")
-        print("!"*60)
+        print("!" * 60)
         print(f"会话ID: {last_session['session_id']}")
         print(f"任务: {last_session['original_task']}")
-        print("-"*60)
+        print("-" * 60)
         print("选择操作:")
         print("  [r] 恢复上次会话")
         print("  [n] 放弃并新建任务")
-        print("!"*60)
+        print("!" * 60)
 
         choice = input("\n> ").strip().lower()
         if choice == 'r':
-            # 恢复模式
-            user_query = last_session['original_task']
-            is_from_history = True
             resume_session_id = last_session['session_id']
             print(f"\n恢复会话 {resume_session_id}...")
         else:
-            # 放弃，标记为失败
             from utils.session_persistence import SessionPersistence
             sp = SessionPersistence(project_dir)
             sp.mark_failed(last_session['session_id'])
             print("已放弃上次会话\n")
-            # 继续正常流程
-            task_info = task_manager.get_task_input()
-            if not task_info or not task_info[0]:
-                return
-            user_query, is_from_history = task_info
-            resume_session_id = None
-    else:
-        # 正常流程
-        task_info = task_manager.get_task_input()
-        if not task_info or not task_info[0]:
-            logger.info("未获取到有效任务，程序退出", extra={'tag': 'APP_EXIT'})
-            return
-        user_query, is_from_history = task_info
-        resume_session_id = None
 
-    # 如果是历史任务，检查状态
-    if is_from_history and task_manager.current_task_id:
-        session = task_manager.get_task_by_id(task_manager.current_task_id)
-        if session:
-            if session['status'] == 'done':
-                # 已完成，作为新任务执行（复制描述，创建新session）
-                print("\n该任务已完成，将作为新任务执行...")
-                resume_session_id = None
-                # 不修改 user_query
-            elif session['status'] in ['run ', 'fail']:
-                # 未完成，询问用户
-                print("\n" + "-"*60)
-                print(f"任务 {task_manager.current_task_id} 状态: {session['status']}")
-                print("-"*60)
-                print("选择操作:")
-                print("  [c] 继续执行（从断点恢复）")
-                print("  [r] 重新开始（创建新会话）")
-                print("-"*60)
+    return resume_session_id
 
-                choice = input("> ").strip().lower()
-                if choice == 'c':
-                    resume_session_id = task_manager.current_task_id
-                else:
-                    # 作为新任务执行
-                    resume_session_id = None
-                    # 可选：标记原会话为失败
-                    task_manager.persistence.mark_failed(task_manager.current_task_id)
 
+def _run_task(project_dir, logger, user_query, resume_session_id, is_from_history):
+    """运行任务"""
     logger.info(f"开始处理任务 (来源: {'历史记录' if is_from_history else '新输入'})",
                 extra={'tag': 'TASK_START'})
-
-    # 直接启动 ReAct Agent（跳过需求澄清阶段）
     logger.info(f"直接启动 ReAct Agent 处理任务: {user_query}...",
-               extra={'tag': 'DIRECT_REACT'})
-    
-    print("\n" + "="*60)
-    print("🚀 直接启动 ReAct Agent 处理任务")
-    print("="*60)
-    print(f"任务描述: {user_query}")
-    
-    # 打印工作流信息
-    print("\n" + "-"*60)
-    print("🔄 简化工作流程")
-    print("-"*60)
-    print("1. 任务管理器 → ReAct Agent: ✅ 直接传递任务")
-    print("2. 跳过 Clarify Agent: ✅ 无需求澄清阶段")
-    print("3. 跳过 Plan Agent: ✅ 无规划阶段")
-    print("-"*60)
-    print("="*60)
-    
-    # 直接实例化并运行 ReAct Agent
+                extra={'tag': 'DIRECT_REACT'})
+
+    print("\n" + "=" * 60)
+    print("🚀 启动 ReAct Agent")
+    print("=" * 60)
+    print(f"任务: {user_query}")
+    print("-" * 60)
+
     try:
         react_agent = ReActAgent(project_directory=project_dir)
         final_report = react_agent.run(user_query, resume_from_session_id=resume_session_id)
         logger.info("ReAct Agent 执行完成", extra={'tag': 'REACT_END'})
-        
-        print("\n" + "="*60)
+
+        print("\n" + "=" * 60)
         print("✅ 任务执行完成!")
-        print("="*60)
+        print("=" * 60)
         print(final_report)
-        print("="*60)
-        
+        print("=" * 60)
+
     except Exception as e:
         logger.error(f"ReAct Agent 执行失败: {str(e)}", extra={'tag': 'REACT_ERROR'})
         print(f"\n❌ 任务执行失败: {str(e)}")
+
 
 if __name__ == "__main__":
     main()

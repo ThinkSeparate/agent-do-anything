@@ -155,3 +155,6 @@ Desktop.ini
 # Session persistence database
 *.db
 *.db-journal
+
+# User custom sandbox policy (user-specific)
+config/user_policy.yaml
