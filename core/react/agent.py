@@ -1,43 +1,140 @@
 # core/react/agent.py
 import os
 import logging
-from langchain.messages import HumanMessage, ToolMessage, AIMessage
-from langchain_core.messages import messages_from_dict
+from langchain.messages import HumanMessage, ToolMessage, AIMessage, RemoveMessage
+from utils.token_utils import estimate_tokens, estimate_messages_tokens
+from langchain_core.messages import messages_from_dict, BaseMessage, AIMessage as AIMessageCore
+from config.configuration import config
+
+
+def auto_compress_messages(messages: list) -> tuple:
+    """
+    Auto-compress message list.
+    Strategy: Keep recent 10 messages, compress older ones while maintaining tool call chain integrity.
+    Returns: (new_message_list, compression_description)
+    """
+    if len(messages) <= 10:
+        return messages, "Too few messages, no compression needed"
+
+    # Scan all messages to identify tool call chain positions
+    protected_indices = set()
+
+    for i, msg in enumerate(messages):
+        if isinstance(msg, AIMessageCore) and getattr(msg, "tool_calls", None):
+            tool_call_ids = {tc.get("id") for tc in msg.tool_calls if tc.get("id")}
+            for j in range(i + 1, len(messages)):
+                if isinstance(messages[j], ToolMessage):
+                    if messages[j].tool_call_id in tool_call_ids:
+                        protected_indices.add(i)
+                        protected_indices.add(j)
+                        tool_call_ids.discard(messages[j].tool_call_id)
+                    if not tool_call_ids:
+                        break
+
+    keep_count = 10
+    start_idx = len(messages) - keep_count
+
+    for i in range(start_idx, len(messages)):
+        protected_indices.add(i)
+
+    while start_idx > 0 and any(idx >= start_idx and idx < start_idx + keep_count for idx in protected_indices):
+        start_idx -= 1
+
+    recent_messages = messages[start_idx:]
+    old_messages = messages[:start_idx]
+
+    compressed_count = 0
+
+    for msg in old_messages:
+        if isinstance(msg, ToolMessage):
+            msg.content = "[COMPRESSED:tool result]"
+            msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
+            compressed_count += 1
+        elif isinstance(msg, AIMessageCore):
+            if getattr(msg, "tool_calls", None):
+                msg.content = "[COMPRESSED:tool call]"
+                msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
+            else:
+                msg.content = "[COMPRESSED]"
+                msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
+            compressed_count += 1
+        elif isinstance(msg, HumanMessage):
+            msg.content = "[COMPRESSED:user input]"
+            msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
+            compressed_count += 1
+
+    old_tokens = estimate_messages_tokens(messages)
+    new_tokens = estimate_messages_tokens(old_messages + recent_messages)
+    saved_tokens = old_tokens - new_tokens
+
+    desc = f"Auto-compression: processed {compressed_count} old messages, kept {len(recent_messages)} messages, saved ~{saved_tokens} tokens"
+    return old_messages + recent_messages, desc
+
+
+def check_and_compress_on_resume(messages: list, logger) -> list:
+    """Check token on resume and auto-compress if needed."""
+    context_limit = config.get("model.context_limit", 128000)
+    token_buffer = config.get("model.token_buffer", int(context_limit * 0.2))
+    safe_threshold = context_limit - token_buffer
+
+    current_tokens = estimate_messages_tokens(messages)
+
+    if current_tokens > safe_threshold:
+        logger.warning(f"Token check on resume: {current_tokens} > {safe_threshold}, auto-compressing",
+                      extra={"tag": "RESUME_COMPRESS"})
+        messages, desc = auto_compress_messages(messages)
+        logger.info(desc, extra={"tag": "RESUME_COMPRESS"})
+        new_tokens = estimate_messages_tokens(messages)
+        logger.info(f"After compression: ~{new_tokens} tokens", extra={"tag": "RESUME_COMPRESS"})
+    else:
+        logger.info(f"Token check on resume: {current_tokens} tokens, safe", extra={"tag": "RESUME_CHECK"})
+
+    return messages
 
 
 def validate_and_fix_messages(messages):
-    """
-    验证并修复消息列表，确保 ToolMessage 都有对应的 tool_calls。
-    移除孤立的 ToolMessage（没有对应 tool_call_id 的）。
-    """
+    """Validate and fix messages to ensure tool call integrity."""
     logger = logging.getLogger(__name__)
-    fixed_messages = []
     valid_tool_call_ids = set()
 
-    # 收集所有有效的 tool_call_id
     for msg in messages:
-        if isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls') and msg.tool_calls:
+        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
             for tc in msg.tool_calls:
-                if tc.get('id'):
-                    valid_tool_call_ids.add(tc['id'])
+                if tc.get("id"):
+                    valid_tool_call_ids.add(tc["id"])
 
-    # 过滤消息
+    tool_msg_ids = set()
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
+                tool_msg_ids.add(msg.tool_call_id)
+
+    fixed_messages = []
     removed_count = 0
+    fixed_tool_calls_count = 0
+
     for i, msg in enumerate(messages):
         if isinstance(msg, ToolMessage):
-            if not hasattr(msg, 'tool_call_id') or msg.tool_call_id not in valid_tool_call_ids:
-                logger.warning(f"移除孤立的 ToolMessage (索引{i}): {getattr(msg, 'tool_call_id', 'N/A')}",
-                             extra={'tag': 'MSG_FIX'})
+            if not hasattr(msg, "tool_call_id") or msg.tool_call_id not in valid_tool_call_ids:
+                logger.warning(f"Remove orphaned ToolMessage (index {i})", extra={"tag": "MSG_FIX"})
                 removed_count += 1
                 continue
+        elif isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
+            missing = [tc.get("id") for tc in msg.tool_calls if tc.get("id") and tc.get("id") not in tool_msg_ids]
+            if missing:
+                logger.warning(f"Fix AIMessage (index {i}): missing tool responses", extra={"tag": "MSG_FIX"})
+                msg = AIMessage(content=msg.content, id=msg.id,
+                              additional_kwargs={**getattr(msg, "additional_kwargs", {}), "tool_calls_removed": True})
+                fixed_tool_calls_count += 1
         fixed_messages.append(msg)
 
-    if removed_count > 0:
-        logger.info(f"消息验证：移除了{removed_count}条孤立消息", extra={'tag': 'MSG_VALIDATED'})
+    if removed_count > 0 or fixed_tool_calls_count > 0:
+        logger.info(f"Message validation: removed {removed_count}, fixed {fixed_tool_calls_count}",
+                   extra={"tag": "MSG_VALIDATED"})
 
     return fixed_messages
 
-from config.configuration import config
+
 from tools import get_react_tools, configure_agent_output_root
 from core.common import agent_utils
 from core.react.prompts import system_prompt_template
@@ -64,7 +161,7 @@ class ReActAgent:
         # 从配置中读取路径
         self.agent_output_root = agent_utils.get_agent_output_root(self.project_directory, config.get('agent.output_root'))
         configure_agent_output_root(lambda: self.agent_output_root)
-        self.logger.info(f"已从配置加载安全写入目录: {self.agent_output_root}", extra={'tag': 'AGENT_INIT'})
+        self.logger.info(f"已从配置加载safe写入目录: {self.agent_output_root}", extra={'tag': 'AGENT_INIT'})
 
         # 1. 准备模型配置
         model_keys = {
@@ -87,7 +184,7 @@ class ReActAgent:
         # 根据模式选择结束工具名称和描述
         if task_mode == 'long':
             task_end_tool = 'wait_for_next_task'
-            task_end_description = '''    - **当你完成当前步骤或需要用户进一步指示时，调用 `${task_end_tool}` 工具。** 调用此工具后，你将等待用户的下一步输入，任务不会结束，而是进入下一个迭代周期。'''
+            task_end_description = '''    - **当你完成Current步骤或需要用户进一步指示时，调用 `${task_end_tool}` 工具。** 调用此工具后，你将等待用户的下一步输入，任务不会结束，而是进入下一个迭代周期。'''
             task_end_rule = '''**只有 `${task_end_tool}` 工具能正式暂停任务等待用户输入。** 不要在思考中直接写出答案，也不要用其他工具来返回答案。长任务模式下，你将多次与用户交互直到用户输入 "done" 结束任务。'''
         else:
             task_end_tool = 'submit_final_answer'
@@ -113,7 +210,7 @@ class ReActAgent:
 
     def run(self, user_input: str, session_id: int = None, is_new: bool = True) -> str:
         """
-        运行代理处理用户输入。
+        运行代理Processed用户输入。
 
         Args:
             user_input: 用户输入的问题或指令
@@ -134,6 +231,8 @@ class ReActAgent:
                 messages = messages_from_dict(saved_state["messages"])
                 # 验证并修复消息（移除孤立的ToolMessage）
                 messages = validate_and_fix_messages(messages)
+                # 【新增】恢复时检查token，必要时自动压缩
+                messages = check_and_compress_on_resume(messages, self.logger)
                 consecutive_failures = saved_state.get("consecutive_failures", 0)
                 initial_state = {
                     "messages": messages,
@@ -187,6 +286,11 @@ class ReActAgent:
                 self.logger.info("任务执行完成", extra={'tag': 'TASK_END'})
                 return final_answer
 
+        except (KeyboardInterrupt, SystemExit):
+            # 用户中断或系统退出，不标记状态，保持run以便恢复
+            self.logger.warning("任务被用户中断或系统退出，会话保持运行状态",
+                               extra={'tag': 'TASK_INTERRUPTED'})
+            raise  # 重新抛出，让上层Processed
         except Exception as e:
             self.logger.critical(f"任务执行过程中发生未捕获的异常: {e}", exc_info=True,
                                  extra={'tag': 'TASK_CRASH'})
@@ -221,20 +325,25 @@ class ReActAgent:
                 # 如果用户输入 done，结束长任务
                 if user_response.lower() == 'done':
                     self.logger.info("用户输入 done，结束长任务", extra={'tag': 'LONG_TASK_END'})
-                    break
+                    # 标记会话完成
+                    if session_id:
+                        persistence.mark_completed(session_id)
+                    self.logger.info(f"长任务执行完成，共 {sub_task_count} 个子任务",
+                                    extra={'tag': 'TASK_END'})
+                    return f"长任务已完成。共执行 {sub_task_count} 个子任务。"
 
                 # 否则，将用户响应作为新任务继续
                 sub_task_count += 1
                 self.logger.info(f"继续长任务第 {sub_task_count} 个子任务",
                                extra={'tag': 'LONG_TASK_CONTINUE'})
 
-                # 构造新的 message0：【总任务】+【当前子任务】
-                new_message0_content = f"【总任务】{original_task}\n【当前子任务】{user_response}"
+                # 构造新的 message0：【总任务】+【Current子任务】
+                new_message0_content = f"【总任务】{original_task}\n【Current子任务】{user_response}"
                 new_message0 = HumanMessage(content=new_message0_content)
 
                 # 构建新状态：
                 # [0] 新的 message0（替换原消息）
-                # [1..n] 原消息（保留所有历史，包括之前的 tool_calls 和 ToolMessage）
+                # [1..n] 原消息（Kept所有历史，包括之前的 tool_calls 和 ToolMessage）
                 # [新] HumanMessage: 用户新输入作为下一个子任务
                 old_messages = messages[1:] if len(messages) > 0 else []
 
@@ -249,15 +358,6 @@ class ReActAgent:
                 }
                 continue
             else:
-                # 没有返回内容，可能是异常情况，结束循环
-                break
-
-        # 标记会话完成
-        if session_id:
-            persistence.mark_completed(session_id)
-
-        self.logger.info(f"长任务执行完成，共 {sub_task_count} 个子任务",
-                        extra={'tag': 'TASK_END'})
-
-        # 返回总结信息
-        return f"长任务已完成。共执行 {sub_task_count} 个子任务。"
+                # 没有返回内容，可能是异常情况，不标记完成，保持run状态
+                self.logger.warning("长任务异常结束：没有返回内容", extra={'tag': 'LONG_TASK_ABNORMAL_END'})
+                return "任务异常结束。会话保持运行状态，可尝试恢复。"

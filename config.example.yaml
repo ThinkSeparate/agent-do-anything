@@ -5,6 +5,7 @@ model:
   name: "deepseek-reasoner"
   timeout: 120
   context_limit: 128000  # 模型上下文长度限制（单位：token）
+  token_buffer: 28000
   context_compress_threshold: 100000  # 触发上下文压缩的阈值
 
 agent:

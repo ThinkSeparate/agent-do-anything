@@ -5,23 +5,10 @@ from langchain_core.messages import BaseMessage, AIMessage, message_to_dict
 from core.common.state_define import AgentState
 from typing import List, Tuple, Dict, Any
 from config.configuration import config
+from utils.token_utils import estimate_tokens, estimate_messages_tokens
 from utils.session_persistence import SessionPersistence
 
 
-def estimate_tokens(text: str) -> int:
-    """估算文本的token数量（粗略估算：4字符≈1token）"""
-    return len(text) // 4 + 1
-
-
-def estimate_messages_tokens(messages: List[BaseMessage]) -> int:
-    """估算消息列表的总token数"""
-    total = 0
-    for msg in messages:
-        content = getattr(msg, 'content', '') or ''
-        total += estimate_tokens(content)
-        # 加上消息结构的固定开销
-        total += 4
-    return total
 
 
 class ToolNode:
@@ -46,7 +33,9 @@ class ToolNode:
 
         # 获取token限制配置
         context_limit = config.get('model.context_limit', 128000)
-        safe_threshold = context_limit - 8000
+        # token_buffer: 用户配置的值，或默认预留20%
+        token_buffer = config.get('model.token_buffer', int(context_limit * 0.2))
+        safe_threshold = context_limit - token_buffer
 
         tool_results = []
         message_updates = []

@@ -152,20 +152,13 @@ def main(project_directory):
             # 查看历史任务
             result = _handle_history_selection(task_manager, current_task_mode)
             if result:
-                user_query, should_resume, exec_task_mode = result
+                user_query, should_resume, exec_task_mode, selected_task_id = result
                 is_from_history = True
 
                 if should_resume:
-                    # 用户选择继续执行（恢复）
-                    last_session = task_manager.get_last_session()
-                    if last_session and last_session['original_task'] == user_query:
-                        resume_session_id = last_session['session_id']
-                        print(f"\n恢复会话 {resume_session_id}...")
-                        _run_task(project_dir, logger, user_query, resume_session_id, is_from_history, is_new=False, task_mode=exec_task_mode)
-                    else:
-                        # 找不到可恢复的会话，新建执行
-                        session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
-                        _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=exec_task_mode)
+                    # 用户选择继续执行（恢复）- 直接使用选择的任务ID
+                    print(f"\n恢复会话 {selected_task_id}...")
+                    _run_task(project_dir, logger, user_query, selected_task_id, is_from_history, is_new=False, task_mode=exec_task_mode)
                 else:
                     # 用户选择重新执行（新建会话）
                     session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
@@ -247,7 +240,7 @@ def _get_sandbox_info(project_dir):
         return ""
 
 
-def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> Optional[Tuple[str, bool, str]]:
+def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> Optional[Tuple[str, bool, str, int]]:
     """处理历史任务选择
 
     Args:
@@ -255,7 +248,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
         global_task_mode: 当前全局任务模式 ('short' 或 'long')
 
     Returns:
-        Tuple[任务内容, 是否恢复, 执行用的模式] 或 None
+        Tuple[任务内容, 是否恢复, 执行用的模式, 任务ID] 或 None
     """
     from datetime import datetime
 
@@ -352,7 +345,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
             print("=" * 60)
 
             # 根据状态显示不同选项
-            if status in ('fail', 'run '):
+            if status in ('fail', 'run'):
                 # 失败/中断的任务：可以继续或重新执行
                 # 继续执行用历史模式，重新执行用全局模式
                 continue_mode = history_task_mode
@@ -393,8 +386,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
                     elif mode_choice != '':
                         print("无效选择，使用默认模式")
 
-                    task_manager.current_task_id = task_id
-                    return task_content, True, exec_mode  # (内容, 恢复, 模式)
+                    return task_content, True, exec_mode, task_id  # (内容, 恢复, 模式, 任务ID)
                 elif choice == 'n':
                     # 重新执行 - 使用全局模式，但支持临时切换
                     exec_mode = new_mode
@@ -415,8 +407,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
                     elif mode_choice != '':
                         print("无效选择，使用默认模式")
 
-                    task_manager.current_task_id = task_id
-                    return task_content, False, exec_mode  # (内容, 新建, 模式)
+                    return task_content, False, exec_mode, task_id  # (内容, 新建, 模式, 任务ID)
                 else:
                     print("无效选择，返回任务列表")
                     continue
@@ -442,8 +433,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
                 elif mode_choice != '':
                     print("无效选择，使用当前全局模式")
 
-                task_manager.current_task_id = task_id
-                return task_content, False, exec_mode  # (内容, 新建, 模式)
+                return task_content, False, exec_mode, task_id  # (内容, 新建, 模式, 任务ID)
 
         print("无效输入，请重试")
 def _check_resume_session(project_dir, task_manager):

@@ -27,7 +27,25 @@ def create_model_node(model_with_tools, system_prompt: str):
         logger.debug(messages_to_send, extra={'tag': 'CONV_SEND'})
         
         # 3. 调用模型
-        response = model_with_tools.invoke(messages_to_send)
+        try:
+            response = model_with_tools.invoke(messages_to_send)
+        except Exception as e:
+            error_msg = str(e).lower()
+            # 检查是否是token超限错误
+            if any(keyword in error_msg for keyword in ['token', 'context', 'length', 'maximum', 'exceed', 'overflow']):
+                logger.critical(
+                    f"模型调用时token/context超限: {e}",
+                    extra={'tag': 'TOKEN_OVERFLOW'}
+                )
+                # 返回一个特殊的AIMessage，让系统知道需要压缩
+                from langchain.messages import AIMessage
+                return {"messages": [AIMessage(
+                    content="【系统错误】上下文已超出模型处理上限。请立即调用压缩工具（compress_message或compress_paragraph）大幅压缩历史消息后再继续。建议：1. 使用compress_paragraph压缩早期消息段落 2. 对早期tool结果使用clear操作",
+                    additional_kwargs={"token_overflow": True}
+                )]}
+            else:
+                # 其他错误，重新抛出
+                raise
         
         # 4. 记录模型回复到通信日志 (CONV_RECV)
         # 直接传递原始响应对象，由日志系统负责格式化
