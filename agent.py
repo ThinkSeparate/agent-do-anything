@@ -135,10 +135,10 @@ def main(project_directory):
             # 处理普通任务文本
             user_query = user_input
             is_from_history = False
-            session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
+            session_id = task_manager.save_task(user_query, task_mode=current_task_mode)
 
             # 启动任务（传入新创建的 session_id 和 task_mode）
-            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=exec_task_mode)
+            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=current_task_mode)
 
             return
 

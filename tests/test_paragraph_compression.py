@@ -40,16 +40,19 @@ def execute_paragraph_compression(messages, start_idx, end_idx, summary_text):
         if is_tool_call or is_tool_result:
             tool_related_msgs.append((idx, msg, is_tool_call))
 
-    # 第一个工具相关消息必须是 AIMessage+tool_calls
-    if tool_related_msgs:
-        first_idx, first_msg, first_is_tool_call = tool_related_msgs[0]
-        if not first_is_tool_call:
-            return [], f"段落压缩失败：范围内第一个工具相关消息（索引{first_idx}）必须是AIMessage且有tool_calls"
+    # 必须至少有一对工具相关消息
+    if not tool_related_msgs:
+        return [], f"段落压缩失败：范围{start_idx}-{end_idx}内没有找到工具相关消息（AIMessage+tool_calls或ToolMessage）"
 
-        # 最后一个工具相关消息必须是 ToolMessage
-        last_idx, last_msg, last_is_tool_call = tool_related_msgs[-1]
-        if last_is_tool_call:
-            return [], f"段落压缩失败：范围内最后一个工具相关消息（索引{last_idx}）必须是ToolMessage"
+    # 第一个工具相关消息必须是 AIMessage+tool_calls
+    first_idx, first_msg, first_is_tool_call = tool_related_msgs[0]
+    if not first_is_tool_call:
+        return [], f"段落压缩失败：范围内第一个工具相关消息（索引{first_idx}）必须是AIMessage且有tool_calls"
+
+    # 最后一个工具相关消息必须是 ToolMessage
+    last_idx, last_msg, last_is_tool_call = tool_related_msgs[-1]
+    if last_is_tool_call:
+        return [], f"段落压缩失败：范围内最后一个工具相关消息（索引{last_idx}）必须是ToolMessage"
 
     try:
         # 1. 使用 start_idx 消息的ID创建总结消息
@@ -189,6 +192,13 @@ def main():
     print("测试5: 错误 - 跨越索引0或1 (0-3)")
     print("="*50)
     updates, desc = execute_paragraph_compression(messages, 0, 3, "跨越测试")
+    print(f"结果: {desc}")
+
+    # 测试6: start_index >= end_index
+    print("\n" + "="*50)
+    print("测试6: 错误 - start_index >= end_index (3-3)")
+    print("="*50)
+    updates, desc = execute_paragraph_compression(messages, 3, 3, "相同索引测试")
     print(f"结果: {desc}")
 
 

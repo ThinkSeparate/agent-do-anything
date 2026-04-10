@@ -31,7 +31,7 @@ def compress_message(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
 @tool
 def compress_paragraph(start_index: int, end_index: int, summary: str) -> Dict[str, Any]:
     """
-    段落压缩。消息数>80时才允许使用。将start_index到end_index范围的消息整体总结替换。
+    段落压缩。消息数>20时才允许使用。将start_index到end_index范围的消息整体总结替换。
     禁止包含索引0（系统消息）和索引1（用户消息）。
     """
     if not isinstance(start_index, int) or not isinstance(end_index, int):
