@@ -4,7 +4,7 @@ from tools.file_tools import file_tools
 from tools.system_tools import system_tools
 from tools.network_tools import network_tools, make_http_request
 from tools.office_tools import office_tools
-from tools.interactive_tools import short_task_tools, long_task_tools
+from tools.interactive_tools import short_task_tools, long_task_tools, ask_user, submit_final_answer, wait_for_next_task
 from tools.clarify_special_tools import clarify_special_tools
 from tools.wrap_with_think import wrap_tool_with_think
 from tools.planning_tools import planning_tools
@@ -26,10 +26,13 @@ __all__ = [
 ]
 
 # 基础工具（所有模式共用）
+# 注意：ask_user, submit_final_answer, wait_for_next_task 必须在这里显式添加
+# 否则它们不会被注册到 _tool_registry._tools_by_name 中
 _base_tools = (
     file_tools + system_tools + network_tools +
     office_tools + clarify_special_tools +
-    planning_tools + compress_tools
+    planning_tools + compress_tools +
+    [ask_user, submit_final_answer, wait_for_next_task]
 )
 
 class ToolRegistry:

@@ -3,7 +3,6 @@ import logging
 from langchain.messages import ToolMessage, HumanMessage, RemoveMessage
 from langchain_core.messages import BaseMessage, AIMessage, message_to_dict
 from core.common.state_define import AgentState
-from tools import tools_by_name
 from typing import List, Tuple
 from config.configuration import config
 from utils.session_persistence import SessionPersistence
@@ -207,6 +206,9 @@ def create_tool_node(max_consecutive_failures: int = 3,
 
     def tool_node(state: AgentState) -> dict:
         """执行工具调用，包含压缩处理"""
+        # 延迟导入避免循环导入
+        from tools import tools_by_name
+
         messages = state["messages"]
         tool_calls = state["messages"][-1].tool_calls
         consecutive_failures = state.get("consecutive_failures", 0)

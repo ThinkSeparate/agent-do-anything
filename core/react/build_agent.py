@@ -4,7 +4,6 @@ from core.common.state_define import AgentState
 from core.common.model_node import create_model_node
 from core.react.agent_logic import should_continue
 from core.common.tool_node import create_tool_node
-from tools import invoke_context_compressor
 
 
 def build_react_graph(model_with_tools, system_prompt: str,

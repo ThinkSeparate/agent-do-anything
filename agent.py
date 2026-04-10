@@ -1,17 +1,17 @@
 # agent.py (修改后的主函数部分 - 直接调用 ReAct Agent)
 import os
 
-# os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8080'
-# os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:8080'
+os.environ['HTTP_PROXY'] = 'http://127.0.0.1:8080'
+os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:8080'
 
-# # 方法2：指定mitmproxy证书路径（推荐，但需要先安装证书）
-# mitmproxy_cert_path = r"C:\Users\20785\.mitmproxy\mitmproxy-ca-cert.cer"
-# if os.path.exists(mitmproxy_cert_path):
-#     os.environ['REQUESTS_CA_BUNDLE'] = mitmproxy_cert_path
-#     os.environ['SSL_CERT_FILE'] = mitmproxy_cert_path
-# else:
-#     print(f"警告: mitmproxy证书未找到在 {mitmproxy_cert_path}")
-#     print("请访问 http://mitm.it/ 下载并安装证书")
+# 方法2：指定mitmproxy证书路径（推荐，但需要先安装证书）
+mitmproxy_cert_path = r"C:\Users\20785\.mitmproxy\mitmproxy-ca-cert.cer"
+if os.path.exists(mitmproxy_cert_path):
+    os.environ['REQUESTS_CA_BUNDLE'] = mitmproxy_cert_path
+    os.environ['SSL_CERT_FILE'] = mitmproxy_cert_path
+else:
+    print(f"警告: mitmproxy证书未找到在 {mitmproxy_cert_path}")
+    print("请访问 http://mitm.it/ 下载并安装证书")
 
 import logging
 from typing import Optional, Tuple
@@ -135,10 +135,10 @@ def main(project_directory):
             # 处理普通任务文本
             user_query = user_input
             is_from_history = False
-            session_id = task_manager.save_task(user_query, task_mode=current_task_mode)
+            session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
 
             # 启动任务（传入新创建的 session_id 和 task_mode）
-            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=current_task_mode)
+            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=exec_task_mode)
 
             return
 
@@ -150,9 +150,9 @@ def main(project_directory):
 
         elif current_selection == '3':
             # 查看历史任务
-            result = _handle_history_selection(task_manager)
+            result = _handle_history_selection(task_manager, current_task_mode)
             if result:
-                user_query, should_resume = result
+                user_query, should_resume, exec_task_mode = result
                 is_from_history = True
 
                 if should_resume:
@@ -161,15 +161,15 @@ def main(project_directory):
                     if last_session and last_session['original_task'] == user_query:
                         resume_session_id = last_session['session_id']
                         print(f"\n恢复会话 {resume_session_id}...")
-                        _run_task(project_dir, logger, user_query, resume_session_id, is_from_history, is_new=False)
+                        _run_task(project_dir, logger, user_query, resume_session_id, is_from_history, is_new=False, task_mode=exec_task_mode)
                     else:
                         # 找不到可恢复的会话，新建执行
-                        session_id = task_manager.save_task(user_query)
-                        _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
+                        session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
+                        _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=exec_task_mode)
                 else:
                     # 用户选择重新执行（新建会话）
-                    session_id = task_manager.save_task(user_query)
-                    _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
+                    session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
+                    _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=exec_task_mode)
 
                 return
             current_selection = '1'
@@ -247,8 +247,16 @@ def _get_sandbox_info(project_dir):
         return ""
 
 
-def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
-    """处理历史任务选择"""
+def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> Optional[Tuple[str, bool, str]]:
+    """处理历史任务选择
+
+    Args:
+        task_manager: 任务管理器实例
+        global_task_mode: 当前全局任务模式 ('short' 或 'long')
+
+    Returns:
+        Tuple[任务内容, 是否恢复, 执行用的模式] 或 None
+    """
     from datetime import datetime
 
     total_count = task_manager.persistence.get_total_session_count()
@@ -332,19 +340,29 @@ def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
 
             task_content = task_record.get("original_task", "")
             status = task_record.get("status", "unknown")
+            history_task_mode = task_record.get("task_mode", "short")  # 任务自己的模式
+            mode_display = {'short': '短任务', 'long': '长任务'}
 
             print("\n" + "=" * 60)
             print(f"历史任务 {task_id}:")
             print("=" * 60)
             print(f"状态: {status}")
+            print(f"记录模式: {mode_display[history_task_mode]}")
             print(task_content)
             print("=" * 60)
 
             # 根据状态显示不同选项
             if status in ('fail', 'run '):
-                print("\n该任务之前执行失败/中断，选择操作:")
-                print("  [c] 继续执行（恢复上次会话）")
-                print("  [n] 重新执行（新建会话）")
+                # 失败/中断的任务：可以继续或重新执行
+                # 继续执行用历史模式，重新执行用全局模式
+                continue_mode = history_task_mode
+                new_mode = global_task_mode
+
+                print(f"\n该任务之前执行失败/中断，选择操作:")
+                print(f"  [c] 继续执行（恢复）- 使用【{mode_display[continue_mode]}】模式")
+                if continue_mode != global_task_mode:
+                    print(f"      （与当前全局设置 {mode_display[global_task_mode]} 不同）")
+                print(f"  [n] 重新执行（新建）- 使用当前【{mode_display[new_mode]}】模式")
                 print("  [q] 返回")
                 print("-" * 60)
 
@@ -352,29 +370,82 @@ def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
                 if choice == 'q':
                     continue
                 elif choice == 'c':
-                    # 继续执行 - 返回任务内容，由外层处理恢复
+                    # 继续执行 - 使用历史任务模式，但支持临时切换
+                    exec_mode = continue_mode
+                    if exec_mode != global_task_mode:
+                        print(f"\n将使用任务原记录的【{mode_display[exec_mode]}】模式执行")
+
+                    # 询问是否临时切换
+                    print(f"\n按回车确认，或输入临时切换:")
+                    print(f"  [s] 短任务模式")
+                    print(f"  [l] 长任务模式")
+                    print(f"  [q] 返回")
+                    mode_choice = input("> ").strip().lower()
+
+                    if mode_choice == 'q':
+                        continue
+                    elif mode_choice == 's':
+                        exec_mode = 'short'
+                        print(f"✓ 临时切换为短任务模式")
+                    elif mode_choice == 'l':
+                        exec_mode = 'long'
+                        print(f"✓ 临时切换为长任务模式")
+                    elif mode_choice != '':
+                        print("无效选择，使用默认模式")
+
                     task_manager.current_task_id = task_id
-                    return task_content, True  # (内容, 是否恢复)
+                    return task_content, True, exec_mode  # (内容, 恢复, 模式)
                 elif choice == 'n':
-                    # 重新执行 - 返回任务内容，新建会话
+                    # 重新执行 - 使用全局模式，但支持临时切换
+                    exec_mode = new_mode
+                    print(f"\n按回车以当前【{mode_display[exec_mode]}】模式执行，或输入临时切换:")
+                    print(f"  [s] 短任务模式")
+                    print(f"  [l] 长任务模式")
+                    print(f"  [q] 返回")
+                    mode_choice = input("> ").strip().lower()
+
+                    if mode_choice == 'q':
+                        continue
+                    elif mode_choice == 's':
+                        exec_mode = 'short'
+                        print(f"✓ 临时切换为短任务模式")
+                    elif mode_choice == 'l':
+                        exec_mode = 'long'
+                        print(f"✓ 临时切换为长任务模式")
+                    elif mode_choice != '':
+                        print("无效选择，使用默认模式")
+
                     task_manager.current_task_id = task_id
-                    return task_content, False  # (内容, 不恢复)
+                    return task_content, False, exec_mode  # (内容, 新建, 模式)
                 else:
                     print("无效选择，返回任务列表")
                     continue
             else:
-                print("\n按回车执行该任务，按q返回")
+                # 已完成的任务：重新执行，使用全局模式
+                exec_mode = global_task_mode
 
-                confirm = input("> ").strip().lower()
-                if confirm == 'q':
+                print(f"\n按回车以当前【{mode_display[exec_mode]}】模式执行，或输入临时切换:")
+                print(f"  [s] 短任务模式")
+                print(f"  [l] 长任务模式")
+                print(f"  [q] 返回")
+
+                mode_choice = input("> ").strip().lower()
+
+                if mode_choice == 'q':
                     continue
+                elif mode_choice == 's':
+                    exec_mode = 'short'
+                    print(f"✓ 临时切换为短任务模式")
+                elif mode_choice == 'l':
+                    exec_mode = 'long'
+                    print(f"✓ 临时切换为长任务模式")
+                elif mode_choice != '':
+                    print("无效选择，使用当前全局模式")
 
                 task_manager.current_task_id = task_id
-                return task_content, False
+                return task_content, False, exec_mode  # (内容, 新建, 模式)
 
         print("无效输入，请重试")
-
-
 def _check_resume_session(project_dir, task_manager):
     """检查是否有未完成的会话，询问用户是否恢复"""
     last_session = task_manager.get_last_session()

@@ -84,8 +84,15 @@ class ReActAgent:
         context_limit = config.get('model.context_limit', 128000)
         compress_threshold = config.get('model.context_compress_threshold', 100000)
 
-        # 根据模式选择结束工具名称
-        task_end_tool = 'wait_for_next_task' if task_mode == 'long' else 'submit_final_answer'
+        # 根据模式选择结束工具名称和描述
+        if task_mode == 'long':
+            task_end_tool = 'wait_for_next_task'
+            task_end_description = '''    - **当你完成当前步骤或需要用户进一步指示时，调用 `${task_end_tool}` 工具。** 调用此工具后，你将等待用户的下一步输入，任务不会结束，而是进入下一个迭代周期。'''
+            task_end_rule = '''**只有 `${task_end_tool}` 工具能正式暂停任务等待用户输入。** 不要在思考中直接写出答案，也不要用其他工具来返回答案。长任务模式下，你将多次与用户交互直到用户输入 "done" 结束任务。'''
+        else:
+            task_end_tool = 'submit_final_answer'
+            task_end_description = '''    - **如果你确信已收集到所有必要信息，可以回答用户最初的问题，则调用 `${task_end_tool}` 工具来交付最终答案。** 调用此工具意味着任务结束。'''
+            task_end_rule = '''**只有 `${task_end_tool}` 工具能正式结束任务。** 不要在思考中直接写出答案，也不要用其他工具来返回答案。'''
 
         from core.react.prompts import system_prompt_template
 
@@ -96,7 +103,9 @@ class ReActAgent:
                 'agent_output': self.agent_output_root,
                 'context_limit': context_limit,
                 'compress_threshold': compress_threshold,
-                'task_end_tool': task_end_tool
+                'task_end_tool': task_end_tool,
+                'task_end_description': task_end_description,
+                'task_end_rule': task_end_rule
             }
         )
 
