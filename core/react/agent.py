@@ -51,10 +51,11 @@ class ReActAgent:
     这是对外的唯一接口，保持与原有调用方式兼容。
     """
 
-    def __init__(self, project_directory: str):
+    def __init__(self, project_directory: str, task_mode: str = 'short'):
         self.logger = logging.getLogger(__name__)
-        self.logger.info("ReActAgent 初始化开始", extra={'tag': 'AGENT_INIT'})
+        self.logger.info(f"ReActAgent 初始化开始 (模式: {task_mode})", extra={'tag': 'AGENT_INIT'})
         self.project_directory = project_directory
+        self.task_mode = task_mode
 
         # 0. 使用公共函数加载配置
         required_keys = ['model.api_key', 'model.base_url', 'model.name', 'model.timeout', 'agent.output_root']
@@ -72,16 +73,21 @@ class ReActAgent:
             'api_key': config.get('model.api_key'),
             'timeout': config.get('model.timeout'),
         }
-        
-        # 2. 使用公共函数创建模型（绑定工具）
+
+        # 2. 使用公共函数创建模型（绑定工具，根据 task_mode 动态选择）
         self.model_with_tools = agent_utils.create_agent_model(
             model_keys=model_keys,
-            tools_getter=get_react_tools
+            tools_getter=lambda: get_react_tools(task_mode=task_mode)
         )
 
         # 3. 使用公共函数渲染系统提示
         context_limit = config.get('model.context_limit', 128000)
         compress_threshold = config.get('model.context_compress_threshold', 100000)
+
+        # 根据模式选择结束工具名称
+        task_end_tool = 'wait_for_next_task' if task_mode == 'long' else 'submit_final_answer'
+
+        from core.react.prompts import system_prompt_template
 
         self.rendered_prompt = agent_utils.render_system_prompt(
             template=system_prompt_template,
@@ -89,7 +95,8 @@ class ReActAgent:
             additional_vars={
                 'agent_output': self.agent_output_root,
                 'context_limit': context_limit,
-                'compress_threshold': compress_threshold
+                'compress_threshold': compress_threshold,
+                'task_end_tool': task_end_tool
             }
         )
 
@@ -153,18 +160,23 @@ class ReActAgent:
         )
 
         try:
-            final_state = self.graph.invoke(initial_state)
+            # 长任务模式循环
+            if self.task_mode == 'long':
+                return self._run_long_task(initial_state, persistence, session_id)
+            else:
+                # 短任务模式：单次执行
+                final_state = self.graph.invoke(initial_state)
 
-            messages = final_state["messages"]
-            last_message = messages[-1]
-            final_answer = last_message.content
+                messages = final_state["messages"]
+                last_message = messages[-1]
+                final_answer = last_message.content
 
-            # 标记会话完成
-            if session_id:
-                persistence.mark_completed(session_id)
+                # 标记会话完成
+                if session_id:
+                    persistence.mark_completed(session_id)
 
-            self.logger.info("任务执行完成", extra={'tag': 'TASK_END'})
-            return final_answer
+                self.logger.info("任务执行完成", extra={'tag': 'TASK_END'})
+                return final_answer
 
         except Exception as e:
             self.logger.critical(f"任务执行过程中发生未捕获的异常: {e}", exc_info=True,
@@ -173,3 +185,70 @@ class ReActAgent:
             if session_id:
                 persistence.mark_failed(session_id)
             return f"任务执行过程发生意外错误，已终止。错误类型：{type(e).__name__}"
+
+    def _run_long_task(self, initial_state, persistence, session_id):
+        """长任务模式：支持多次迭代，直到用户输入 done"""
+        from langchain.messages import HumanMessage, ToolMessage
+
+        current_state = initial_state
+        sub_task_count = 0
+
+        # 从数据库读取总任务
+        session_info = persistence.get_session(session_id)
+        original_task = session_info.get('original_task', '') if session_info else ''
+
+        while True:
+            # 执行一次图
+            final_state = self.graph.invoke(current_state)
+
+            messages = final_state["messages"]
+            last_message = messages[-1]
+
+            # 检查是否是 wait_for_next_task 返回的结果
+            # wait_for_next_task 工具返回的内容包含用户的输入
+            if last_message.content:
+                user_response = last_message.content.strip()
+
+                # 如果用户输入 done，结束长任务
+                if user_response.lower() == 'done':
+                    self.logger.info("用户输入 done，结束长任务", extra={'tag': 'LONG_TASK_END'})
+                    break
+
+                # 否则，将用户响应作为新任务继续
+                sub_task_count += 1
+                self.logger.info(f"继续长任务第 {sub_task_count} 个子任务",
+                               extra={'tag': 'LONG_TASK_CONTINUE'})
+
+                # 构造新的 message0：【总任务】+【当前子任务】
+                new_message0_content = f"【总任务】{original_task}\n【当前子任务】{user_response}"
+                new_message0 = HumanMessage(content=new_message0_content)
+
+                # 构建新状态：
+                # [0] 新的 message0（替换原消息）
+                # [1..n] 原消息（保留所有历史，包括之前的 tool_calls 和 ToolMessage）
+                # [新] HumanMessage: 用户新输入作为下一个子任务
+                old_messages = messages[1:] if len(messages) > 0 else []
+
+                # 用户新输入作为 HumanMessage
+                user_msg = HumanMessage(content=user_response)
+
+                new_messages = [new_message0] + old_messages + [user_msg]
+
+                current_state = {
+                    "messages": new_messages,
+                    "consecutive_failures": 0,
+                }
+                continue
+            else:
+                # 没有返回内容，可能是异常情况，结束循环
+                break
+
+        # 标记会话完成
+        if session_id:
+            persistence.mark_completed(session_id)
+
+        self.logger.info(f"长任务执行完成，共 {sub_task_count} 个子任务",
+                        extra={'tag': 'TASK_END'})
+
+        # 返回总结信息
+        return f"长任务已完成。共执行 {sub_task_count} 个子任务。"

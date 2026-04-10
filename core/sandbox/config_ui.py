@@ -11,6 +11,7 @@ class SandboxConfigUI:
     沙盒配置交互式界面
 
     提供友好的命令行界面，让用户无需编辑YAML即可配置沙盒策略
+    使用 UserProfile 统一存储用户配置
     """
 
     def __init__(self, project_directory: str):
@@ -18,53 +19,51 @@ class SandboxConfigUI:
         self.default_config_file = os.path.join(
             project_directory, "config", "sandbox_policy.yaml"
         )
-        self.user_config_file = os.path.join(
-            project_directory, "config", "user_policy.yaml"
-        )
-        self.policy = self._load_policy()
 
-    def _load_policy(self) -> dict:
-        """加载配置（默认 + 用户定制）"""
         # 加载默认配置
-        default_policy = {"mode": "normal"}
+        self.default_policy = self._load_default_policy()
+
+        # 从 UserProfile 加载用户配置
+        from utils.user_profile import get_user_profile
+        self.user_profile = get_user_profile(project_directory)
+        self.policy = self._build_policy()
+
+    def _load_default_policy(self) -> dict:
+        """加载默认配置"""
         try:
             with open(self.default_config_file, "r", encoding="utf-8") as f:
-                default_policy = yaml.safe_load(f) or {"mode": "normal"}
+                return yaml.safe_load(f) or {"mode": "normal"}
         except Exception:
-            pass
+            return {"mode": "normal"}
 
-        # 加载用户配置（覆盖默认）
-        user_policy = {}
-        try:
-            with open(self.user_config_file, "r", encoding="utf-8") as f:
-                user_policy = yaml.safe_load(f) or {}
-        except Exception:
-            pass
+    def _build_policy(self) -> dict:
+        """合并默认配置和用户配置"""
+        policy = self.default_policy.copy()
 
-        # 合并：用户配置覆盖默认配置
-        policy = default_policy.copy()
-        policy.update(user_policy)
+        # 从 UserProfile 获取用户配置
+        sandbox_policy = self.user_profile.sandbox_policy
+        if sandbox_policy.get('mode'):
+            policy['mode'] = sandbox_policy['mode']
+        if sandbox_policy.get('custom_rules'):
+            policy['custom_rules'] = sandbox_policy['custom_rules']
+
         return policy
 
     def _save_policy(self):
-        """保存用户配置（只保存与默认不同的部分）"""
+        """保存用户配置到 UserProfile"""
         try:
-            # 只保存用户定制的部分
-            user_policy = {}
+            # 保存模式
+            if self.policy.get("mode") != self.default_policy.get("mode", "normal"):
+                self.user_profile.sandbox_mode = self.policy["mode"]
 
-            # 基础模式
-            if self.policy.get("mode") != "normal":
-                user_policy["mode"] = self.policy["mode"]
-
-            # 用户自定义规则
+            # 保存自定义规则
             if "custom_rules" in self.policy:
-                user_policy["custom_rules"] = self.policy["custom_rules"]
+                # 清除旧规则并设置新规则
+                self.user_profile.clear_sandbox_custom_rules()
+                for cat_key, cat_rules in self.policy["custom_rules"].items():
+                    for cmd, rule in cat_rules.items():
+                        self.user_profile.set_sandbox_custom_rule(cat_key, cmd, rule)
 
-            os.makedirs(os.path.dirname(self.user_config_file), exist_ok=True)
-            with open(self.user_config_file, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    user_policy, f, allow_unicode=True, sort_keys=False, default_flow_style=False
-                )
             return True
         except Exception as e:
             print(f"❌ 保存配置失败: {e}")

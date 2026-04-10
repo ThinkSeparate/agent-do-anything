@@ -20,6 +20,7 @@ import click
 from utils import setup_logging
 from core.react.agent import ReActAgent
 from utils.task_manager import TaskManager
+from utils.user_profile import get_user_profile
 from core.sandbox.config_ui import quick_setup_sandbox, show_sandbox_status
 
 
@@ -34,6 +35,10 @@ def main(project_directory):
     logger = logging.getLogger(__name__)
     logger.info(f"程序启动，项目目录: {project_dir}", extra={'tag': 'APP_START'})
 
+    # 加载用户配置
+    user_profile = get_user_profile(project_dir)
+    current_task_mode = user_profile.task_mode  # 从配置读取任务模式
+
     # 实例化任务管理器
     task_manager = TaskManager(project_directory=project_dir, history_file="task_history.json")
 
@@ -47,7 +52,7 @@ def main(project_directory):
     while True:
         if current_selection == '1':
             # 任务模式
-            _show_main_menu(has_pending, pending_session, project_dir)
+            _show_main_menu(has_pending, pending_session, project_dir, current_task_mode)
 
             user_input = input("> ").strip()
 
@@ -92,9 +97,16 @@ def main(project_directory):
                     pending_session = None
                     continue
                 elif user_input == '1':
-                    # 已在任务模式，提示用户直接输入任务
-                    print("\nℹ️ 已在任务模式，直接输入任务描述后回车即可执行")
-                    print("   或输入 2/3 切换到其他功能\n")
+                    # 模式切换
+                    new_mode = 'long' if current_task_mode == 'short' else 'short'
+                    print(f"\n按回车切换到【{'长任务' if new_mode == 'long' else '短任务'}模式】，或输入 q 返回：")
+                    confirm = input("> ").strip().lower()
+                    if confirm == 'q':
+                        continue
+                    current_task_mode = new_mode
+                    user_profile.task_mode = new_mode  # 保存到配置
+                    mode_name = '长任务' if current_task_mode == 'long' else '短任务'
+                    print(f"\n✅ 已切换到{mode_name}模式")
                     continue
                 else:
                     # 普通任务文本
@@ -108,18 +120,25 @@ def main(project_directory):
                     current_selection = '3'
                     continue
                 elif user_input == '1':
-                    # 已在任务模式，提示用户直接输入任务
-                    print("\nℹ️ 已在任务模式，直接输入任务描述后回车即可执行")
-                    print("   或输入 2/3 切换到其他功能\n")
+                    # 模式切换
+                    new_mode = 'long' if current_task_mode == 'short' else 'short'
+                    print(f"\n按回车切换到【{'长任务' if new_mode == 'long' else '短任务'}模式】，或输入 q 返回：")
+                    confirm = input("> ").strip().lower()
+                    if confirm == 'q':
+                        continue
+                    current_task_mode = new_mode
+                    user_profile.task_mode = new_mode  # 保存到配置
+                    mode_name = '长任务' if current_task_mode == 'long' else '短任务'
+                    print(f"\n✅ 已切换到{mode_name}模式")
                     continue
 
             # 处理普通任务文本
             user_query = user_input
             is_from_history = False
-            session_id = task_manager.save_task(user_query)
+            session_id = task_manager.save_task(user_query, task_mode=current_task_mode)
 
-            # 启动任务（传入新创建的 session_id）
-            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True)
+            # 启动任务（传入新创建的 session_id 和 task_mode）
+            _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=True, task_mode=current_task_mode)
 
             return
 
@@ -156,12 +175,15 @@ def main(project_directory):
             current_selection = '1'
 
 
-def _show_main_menu(has_pending, pending_session, project_dir):
+def _show_main_menu(has_pending, pending_session, project_dir, task_mode='short'):
     """显示主菜单"""
     print("\n" + "=" * 60)
 
     # 获取沙盒配置信息
     sandbox_info = _get_sandbox_info(project_dir)
+
+    # 模式显示文本
+    mode_display = {'short': '短任务模式', 'long': '长任务模式'}
 
     if has_pending and pending_session:
         print("🔔 检测到未完成的会话")
@@ -174,7 +196,7 @@ def _show_main_menu(has_pending, pending_session, project_dir):
         print(f"任务: {task_preview}")
         print("-" * 60)
         print("操作选项（输入数字选择功能，q 退出，直接输入文本后回车执行任务）：")
-        print("  [1] 开始新任务 （当前选项）")
+        print(f"  [1] 切换任务模式 （当前：{mode_display[task_mode]}）")
         print(f"  [2] 🔒 配置沙盒安全策略 {sandbox_info}")
         print("  [3] 📋 查看历史任务")
         print("  [4] 🔄 恢复此会话并继续执行")
@@ -182,7 +204,7 @@ def _show_main_menu(has_pending, pending_session, project_dir):
         print("  [q] 退出")
     else:
         print("操作选项（输入数字选择功能，q 退出，直接输入文本后回车执行任务）：")
-        print("  [1] 开始任务 （当前选项）")
+        print(f"  [1] 切换任务模式 （当前：{mode_display[task_mode]}）")
         print(f"  [2] 🔒 配置沙盒安全策略 {sandbox_info}")
         print("  [3] 📋 查看历史任务")
         print("  [q] 退出")
@@ -252,6 +274,7 @@ def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
                 task_id = task_record.get("session_id", "N/A")
                 task_content = task_record.get("original_task", "")
                 status = task_record.get("status", "unknown")
+                task_mode = task_record.get("task_mode", "short")
                 created_at = task_record.get("created_at", "")
 
                 time_str = "未知时间"
@@ -262,10 +285,11 @@ def _handle_history_selection(task_manager) -> Optional[Tuple[str, bool]]:
                     except:
                         pass
 
-                preview = task_content[:60] + "..." if len(task_content) > 60 else task_content
+                preview = task_content[:50] + "..." if len(task_content) > 50 else task_content
                 status_word = status[:4] if len(status) >= 4 else status.ljust(4)
+                mode_indicator = "L" if task_mode == "long" else "S"
 
-                print(f"[{task_id:3d}] [{status_word}] [{time_str}] {preview}")
+                print(f"[{task_id:3d}] [{status_word}] [{mode_indicator}] [{time_str}] {preview}")
 
             print("=" * 80)
         else:
@@ -381,21 +405,22 @@ def _check_resume_session(project_dir, task_manager):
     return resume_session_id
 
 
-def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=False):
+def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=False, task_mode='short'):
     """运行任务"""
-    logger.info(f"开始处理任务 (来源: {'历史记录' if is_from_history else '新输入'})",
+    mode_name = '长任务' if task_mode == 'long' else '短任务'
+    logger.info(f"开始处理{mode_name} (来源: {'历史记录' if is_from_history else '新输入'})",
                 extra={'tag': 'TASK_START'})
     logger.info(f"直接启动 ReAct Agent 处理任务: {user_query}...",
                 extra={'tag': 'DIRECT_REACT'})
 
     print("\n" + "=" * 60)
-    print("🚀 启动 ReAct Agent")
+    print(f"🚀 启动 ReAct Agent ({mode_name}模式)")
     print("=" * 60)
     print(f"任务: {user_query}")
     print("-" * 60)
 
     try:
-        react_agent = ReActAgent(project_directory=project_dir)
+        react_agent = ReActAgent(project_directory=project_dir, task_mode=task_mode)
         final_report = react_agent.run(user_query, session_id=session_id, is_new=is_new)
         logger.info("ReAct Agent 执行完成", extra={'tag': 'REACT_END'})
 

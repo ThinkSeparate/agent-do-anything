@@ -158,3 +158,6 @@ Desktop.ini
 
 # User custom sandbox policy (user-specific)
 config/user_policy.yaml
+
+# User profile (user-specific configuration)
+user_profile.yaml

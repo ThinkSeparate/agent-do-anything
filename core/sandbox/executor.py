@@ -65,6 +65,9 @@ class SandboxExecutor:
             )
         self.policy = self._load_policy(policy_file)
 
+        # 从 UserProfile 加载用户配置并合并
+        self._merge_user_profile()
+
         # 初始化命令策略映射
         self.command_policies = self._build_command_policies()
 
@@ -82,6 +85,27 @@ class SandboxExecutor:
         except Exception as e:
             self.logger.error(f"加载沙盒策略失败: {e}")
             return {'mode': 'normal', 'command_policies': {}}
+
+    def _merge_user_profile(self):
+        """从 UserProfile 合并用户配置"""
+        try:
+            from utils.user_profile import get_user_profile
+            user_profile = get_user_profile(self.project_directory)
+
+            # 合并模式
+            user_mode = user_profile.sandbox_mode
+            if user_mode:
+                self.policy['mode'] = user_mode
+
+            # 合并自定义规则
+            user_rules = user_profile.sandbox_custom_rules
+            if user_rules:
+                if 'custom_rules' not in self.policy:
+                    self.policy['custom_rules'] = {}
+                self.policy['custom_rules'].update(user_rules)
+
+        except Exception as e:
+            self.logger.warning(f"加载用户配置失败: {e}")
 
     def _expand_policy_variables(self, policy: dict):
         """展开策略中的变量"""

@@ -30,6 +30,7 @@ class SessionPersistence:
                     session_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     original_task TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
+                    task_mode TEXT DEFAULT 'short',
                     state_json TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -37,19 +38,20 @@ class SessionPersistence:
             """)
             conn.commit()
 
-    def create_session(self, original_task: str) -> int:
+    def create_session(self, original_task: str, task_mode: str = 'short') -> int:
         """Create a new session and return its session_id.
 
         Args:
             original_task: The original task description for this session.
+            task_mode: 'short' for short task, 'long' for long task mode.
 
         Returns:
             The session_id of the newly created session.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "INSERT INTO session_states (original_task, status) VALUES (?, 'run ')",
-                (original_task,)
+                "INSERT INTO session_states (original_task, status, task_mode) VALUES (?, 'run ', ?)",
+                (original_task, task_mode)
             )
             conn.commit()
             return cursor.lastrowid

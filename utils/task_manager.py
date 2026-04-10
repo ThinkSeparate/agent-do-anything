@@ -191,6 +191,7 @@ class TaskManager:
             task_id = task_record.get("session_id", "N/A")
             task_content = task_record.get("original_task", "")
             status = task_record.get("status", "unknown")
+            task_mode = task_record.get("task_mode", "short")
             created_at = task_record.get("created_at", "")
 
             # 格式化时间
@@ -203,11 +204,13 @@ class TaskManager:
                     pass
 
             # 显示任务预览
-            preview = task_content[:60] + "..." if len(task_content) > 60 else task_content
+            preview = task_content[:50] + "..." if len(task_content) > 50 else task_content
             # 状态已经是4字符简写格式
             status_word = status[:4] if len(status) >= 4 else status.ljust(4)
+            # 模式标识
+            mode_indicator = "L" if task_mode == "long" else "S"
 
-            print(f"[{task_id:3d}] [{status_word}] [{time_str}] {preview}")
+            print(f"[{task_id:3d}] [{status_word}] [{mode_indicator}] [{time_str}] {preview}")
 
         print("="*80)
 
@@ -217,17 +220,18 @@ class TaskManager:
 
         Args:
             task: 任务内容
-            **kwargs: 额外信息
+            **kwargs: 额外信息，可包含 task_mode
 
         Returns:
             int: session_id，失败返回 -1
         """
         try:
-            session_id = self.persistence.create_session(task)
+            task_mode = kwargs.get('task_mode', 'short')
+            session_id = self.persistence.create_session(task, task_mode=task_mode)
             self.current_task_id = session_id
-            self.logger.info(f"任务已保存到历史记录，ID: {session_id}",
+            self.logger.info(f"任务已保存到历史记录，ID: {session_id}, 模式: {task_mode}",
                            extra={'tag': 'TASK_SAVED'})
-            print(f"✓ 任务已保存，ID: {session_id}")
+            print(f"✓ 任务已保存，ID: {session_id} ({'长任务' if task_mode == 'long' else '短任务'})")
             return session_id
         except Exception as e:
             self.logger.error(f"保存任务失败: {str(e)}",
