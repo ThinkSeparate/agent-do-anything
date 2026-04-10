@@ -116,6 +116,9 @@ agent_output/
 # 框架测试目录
 try_framework/
 
+# 废弃代码目录（miscellaneous）
+misc/
+
 # 文档
 docs/
 
