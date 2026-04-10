@@ -184,12 +184,12 @@ class SandboxExecutor:
 
         return False
 
-    def analyze_command(self, command: str) -> Tuple[SafetyLevel, str]:
+    def analyze_command(self, command: str) -> Tuple[SafetyLevel, str, str]:
         """
         分析命令的安全级别
 
         Returns:
-            (安全级别, 原因说明)
+            (安全级别, 原因说明, 命令类型) 命令类型: 'blacklist'|'unknown'|'allowed'|'dangerous_pattern'
         """
         cmd_lower = command.lower().strip()
 
@@ -208,7 +208,7 @@ class SandboxExecutor:
 
         for pattern in dangerous_patterns:
             if re.search(pattern, cmd_lower):
-                return SafetyLevel.DANGEROUS, f"匹配危险模式: {pattern}"
+                return SafetyLevel.DANGEROUS, f"匹配危险模式: {pattern}", "dangerous_pattern"
 
         # 检查完整命令是否在策略中（优先匹配更长的命令）
         matched_policy = None
@@ -223,17 +223,31 @@ class SandboxExecutor:
 
         if matched_policy:
             if matched_policy.require_confirm and not matched_policy.auto_execute:
-                return SafetyLevel.DANGEROUS, f"{matched_cmd} 被分类为禁止"
+                # 检查是否是明确禁止的命令（黑名单）
+                categories = self.policy.get('command_categories', {})
+                for cat_config in categories.values():
+                    forbidden = set(cat_config.get('forbidden', []))
+                    # 检查默认 forbidden 列表
+                    for forbidden_cmd in forbidden:
+                        if self._match_command(cmd_lower, forbidden_cmd):
+                            return SafetyLevel.DANGEROUS, f"{matched_cmd} 在系统黑名单中", "blacklist"
+                # 检查用户自定义规则中的 deny
+                custom_rules = self.policy.get('custom_rules', {})
+                for cat_key, cat_custom in custom_rules.items():
+                    for cmd, rule in cat_custom.items():
+                        if rule == 'deny' and self._match_command(cmd_lower, cmd):
+                            return SafetyLevel.DANGEROUS, f"{matched_cmd} 被用户策略明确禁止", "blacklist"
+                return SafetyLevel.DANGEROUS, f"{matched_cmd} 被分类为禁止", "blacklist"
             elif matched_policy.require_confirm:
-                return SafetyLevel.CAUTION, f"{matched_cmd} 在当前模式下需要确认"
+                return SafetyLevel.CAUTION, f"{matched_cmd} 在当前模式下需要确认", "allowed"
             else:
-                return SafetyLevel.SAFE, f"{matched_cmd} 允许自动执行"
+                return SafetyLevel.SAFE, f"{matched_cmd} 允许自动执行", "allowed"
 
         # 提取主要命令作为备选
         base_cmd = cmd_lower.split()[0] if cmd_lower else ''
 
         # 未知命令，保守处理
-        return SafetyLevel.CAUTION, f"未知命令 '{base_cmd}'，需要确认"
+        return SafetyLevel.CAUTION, f"未知命令 '{base_cmd}'，需要确认", "unknown"
 
     def check_directory_allowed(self, command: str) -> Tuple[bool, str]:
         """
@@ -288,6 +302,20 @@ class SandboxExecutor:
                 paths.append(clean_path)
         return paths
 
+    def _log_unknown_command(self, command: str, reason: str):
+        """记录未知命令到日志文件（只记录命令本身）"""
+        try:
+            log_dir = os.path.join(self.project_directory, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, 'unknown_commands.log')
+
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(f"{command}\n")
+
+            self.logger.info(f"未知命令已记录: {command}", extra={'tag': 'UNKNOWN_CMD'})
+        except Exception as e:
+            self.logger.error(f"记录未知命令失败: {e}", extra={'tag': 'UNKNOWN_CMD_ERROR'})
+
     def check_whitelist(self, command: str) -> bool:
         """检查命令是否在无人值守白名单中"""
         whitelist = self.policy.get('unattended_whitelist', [])
@@ -300,36 +328,36 @@ class SandboxExecutor:
                 return True
         return False
 
-    def should_confirm(self, command: str) -> Tuple[bool, str]:
+    def should_confirm(self, command: str) -> Tuple[bool, str, str]:
         """
         判断是否需要用户确认
 
         Returns:
-            (是否需要确认, 原因)
+            (是否需要确认, 原因, 命令类型) 命令类型: 'blacklist'|'unknown'|'allowed'|'dangerous_pattern'
         """
         mode = self.policy.get('mode', 'normal')
 
         # 无人值守模式：检查白名单
         if mode == 'unattended':
             if self.check_whitelist(command):
-                return False, "在白名单中，无人值守模式自动执行"
+                return False, "在白名单中，无人值守模式自动执行", "allowed"
             else:
-                return True, "不在白名单中，需要确认"
+                return True, "不在白名单中，需要确认", "unknown"
 
         # 分析命令安全级别
-        safety, reason = self.analyze_command(command)
+        safety, reason, cmd_type = self.analyze_command(command)
 
         if safety == SafetyLevel.DANGEROUS:
-            return True, f"危险命令: {reason}"
+            return True, f"危险命令: {reason}", cmd_type
         elif safety == SafetyLevel.CAUTION:
-            return True, f"需注意: {reason}"
+            return True, f"需注意: {reason}", cmd_type
 
         # 目录检查
         dir_allowed, dir_reason = self.check_directory_allowed(command)
         if not dir_allowed:
-            return True, f"目录限制: {dir_reason}"
+            return True, f"目录限制: {dir_reason}", "allowed"
 
-        return False, "安全检查通过，自动执行"
+        return False, "安全检查通过，自动执行", "allowed"
 
     def execute(self, command: str, timeout: int = None, confirm_callback=None) -> ExecutionResult:
         """
@@ -346,10 +374,14 @@ class SandboxExecutor:
         start_time = time.time()
 
         # 检查是否需要确认
-        need_confirm, reason = self.should_confirm(command)
+        need_confirm, reason, cmd_type = self.should_confirm(command)
 
         if need_confirm:
-            self.logger.info(f"命令需要确认: {reason}")
+            self.logger.info(f"命令需要确认: {reason}, 类型: {cmd_type}")
+
+            # 如果是未知命令，记录到日志
+            if cmd_type == 'unknown':
+                self._log_unknown_command(command, reason)
 
             if confirm_callback:
                 if not confirm_callback(command, reason):
