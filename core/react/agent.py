@@ -2,140 +2,17 @@
 import os
 import logging
 from langchain.messages import HumanMessage, ToolMessage, AIMessage, RemoveMessage
-from utils.token_utils import estimate_tokens, estimate_messages_tokens
-from langchain_core.messages import messages_from_dict, BaseMessage, AIMessage as AIMessageCore
+from langchain_core.messages import messages_from_dict
 from config.configuration import config
 
 
-def auto_compress_messages(messages: list) -> tuple:
-    """
-    Auto-compress message list.
-    Strategy: Keep recent 10 messages, compress older ones while maintaining tool call chain integrity.
-    Returns: (new_message_list, compression_description)
-    """
-    if len(messages) <= 10:
-        return messages, "Too few messages, no compression needed"
-
-    # Scan all messages to identify tool call chain positions
-    protected_indices = set()
-
-    for i, msg in enumerate(messages):
-        if isinstance(msg, AIMessageCore) and getattr(msg, "tool_calls", None):
-            tool_call_ids = {tc.get("id") for tc in msg.tool_calls if tc.get("id")}
-            for j in range(i + 1, len(messages)):
-                if isinstance(messages[j], ToolMessage):
-                    if messages[j].tool_call_id in tool_call_ids:
-                        protected_indices.add(i)
-                        protected_indices.add(j)
-                        tool_call_ids.discard(messages[j].tool_call_id)
-                    if not tool_call_ids:
-                        break
-
-    keep_count = 10
-    start_idx = len(messages) - keep_count
-
-    for i in range(start_idx, len(messages)):
-        protected_indices.add(i)
-
-    while start_idx > 0 and any(idx >= start_idx and idx < start_idx + keep_count for idx in protected_indices):
-        start_idx -= 1
-
-    recent_messages = messages[start_idx:]
-    old_messages = messages[:start_idx]
-
-    compressed_count = 0
-
-    for msg in old_messages:
-        if isinstance(msg, ToolMessage):
-            msg.content = "[COMPRESSED:tool result]"
-            msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
-            compressed_count += 1
-        elif isinstance(msg, AIMessageCore):
-            if getattr(msg, "tool_calls", None):
-                msg.content = "[COMPRESSED:tool call]"
-                msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
-            else:
-                msg.content = "[COMPRESSED]"
-                msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
-            compressed_count += 1
-        elif isinstance(msg, HumanMessage):
-            msg.content = "[COMPRESSED:user input]"
-            msg.additional_kwargs = {**getattr(msg, "additional_kwargs", {}), "compressed": True}
-            compressed_count += 1
-
-    old_tokens = estimate_messages_tokens(messages)
-    new_tokens = estimate_messages_tokens(old_messages + recent_messages)
-    saved_tokens = old_tokens - new_tokens
-
-    desc = f"Auto-compression: processed {compressed_count} old messages, kept {len(recent_messages)} messages, saved ~{saved_tokens} tokens"
-    return old_messages + recent_messages, desc
-
-
-def check_and_compress_on_resume(messages: list, logger) -> list:
-    """Check token on resume and auto-compress if needed."""
-    context_limit = config.get("model.context_limit", 128000)
-    token_buffer = config.get("model.token_buffer", int(context_limit * 0.2))
-    safe_threshold = context_limit - token_buffer
-
-    current_tokens = estimate_messages_tokens(messages)
-
-    if current_tokens > safe_threshold:
-        logger.warning(f"Token check on resume: {current_tokens} > {safe_threshold}, auto-compressing",
-                      extra={"tag": "RESUME_COMPRESS"})
-        messages, desc = auto_compress_messages(messages)
-        logger.info(desc, extra={"tag": "RESUME_COMPRESS"})
-        new_tokens = estimate_messages_tokens(messages)
-        logger.info(f"After compression: ~{new_tokens} tokens", extra={"tag": "RESUME_COMPRESS"})
-    else:
-        logger.info(f"Token check on resume: {current_tokens} tokens, safe", extra={"tag": "RESUME_CHECK"})
-
-    return messages
-
-
-def validate_and_fix_messages(messages):
-    """Validate and fix messages to ensure tool call integrity."""
-    logger = logging.getLogger(__name__)
-    valid_tool_call_ids = set()
-
-    for msg in messages:
-        if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("id"):
-                    valid_tool_call_ids.add(tc["id"])
-
-    tool_msg_ids = set()
-    for msg in messages:
-        if isinstance(msg, ToolMessage):
-            if hasattr(msg, "tool_call_id") and msg.tool_call_id:
-                tool_msg_ids.add(msg.tool_call_id)
-
-    fixed_messages = []
-    removed_count = 0
-    fixed_tool_calls_count = 0
-
-    for i, msg in enumerate(messages):
-        if isinstance(msg, ToolMessage):
-            if not hasattr(msg, "tool_call_id") or msg.tool_call_id not in valid_tool_call_ids:
-                logger.warning(f"Remove orphaned ToolMessage (index {i})", extra={"tag": "MSG_FIX"})
-                removed_count += 1
-                continue
-        elif isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-            missing = [tc.get("id") for tc in msg.tool_calls if tc.get("id") and tc.get("id") not in tool_msg_ids]
-            if missing:
-                logger.warning(f"Fix AIMessage (index {i}): missing tool responses", extra={"tag": "MSG_FIX"})
-                msg = AIMessage(content=msg.content, id=msg.id,
-                              additional_kwargs={**getattr(msg, "additional_kwargs", {}), "tool_calls_removed": True})
-                fixed_tool_calls_count += 1
-        fixed_messages.append(msg)
-
-    if removed_count > 0 or fixed_tool_calls_count > 0:
-        logger.info(f"Message validation: removed {removed_count}, fixed {fixed_tool_calls_count}",
-                   extra={"tag": "MSG_VALIDATED"})
-
-    return fixed_messages
 
 
 from tools import get_react_tools, configure_agent_output_root
+from utils.token_utils import (
+    calculate_tools_token_count, set_tools_token_count,
+    set_model_name, set_tools_list
+)
 from core.common import agent_utils
 from core.react.prompts import system_prompt_template
 from core.react.build_agent import build_react_graph
@@ -171,10 +48,22 @@ class ReActAgent:
             'timeout': config.get('model.timeout'),
         }
 
-        # 2. 使用公共函数创建模型（绑定工具，根据 task_mode 动态选择）
+        # 2. 设置模型名称（用于 token 计算）
+        model_name = config.get('model.name', 'gpt-4')
+        set_model_name(model_name)
+        self.logger.info(f"使用模型: {model_name}", extra={'tag': 'AGENT_INIT'})
+
+        # 3. 获取工具列表并计算工具 token 数量
+        react_tools = get_react_tools(task_mode=task_mode)
+        tools_token_count = calculate_tools_token_count(react_tools)
+        set_tools_token_count(tools_token_count)
+        set_tools_list(react_tools)  # 存储工具列表供 API 构造使用
+        self.logger.info(f"工具定义占用 token: {tools_token_count}", extra={'tag': 'AGENT_INIT'})
+
+        # 3. 使用公共函数创建模型（绑定工具）
         self.model_with_tools = agent_utils.create_agent_model(
             model_keys=model_keys,
-            tools_getter=lambda: get_react_tools(task_mode=task_mode)
+            tools_getter=lambda: react_tools
         )
 
         # 3. 使用公共函数渲染系统提示
@@ -229,10 +118,8 @@ class ReActAgent:
             saved_state = persistence.load_state(session_id)
             if saved_state:
                 messages = messages_from_dict(saved_state["messages"])
-                # 验证并修复消息（移除孤立的ToolMessage）
-                messages = validate_and_fix_messages(messages)
-                # 【新增】恢复时检查token，必要时自动压缩
-                messages = check_and_compress_on_resume(messages, self.logger)
+                # 【已迁移】消息处理已统一到 model_node.py 中处理
+                # 包括：验证修复、token截断、生成提示
                 consecutive_failures = saved_state.get("consecutive_failures", 0)
                 initial_state = {
                     "messages": messages,

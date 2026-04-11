@@ -50,7 +50,7 @@ class SessionPersistence:
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "INSERT INTO session_states (original_task, status, task_mode) VALUES (?, 'run ', ?)",
+                "INSERT INTO session_states (original_task, status, task_mode) VALUES (?, 'run', ?)",
                 (original_task, task_mode)
             )
             conn.commit()

@@ -134,7 +134,7 @@ class TaskManager:
 
                 # 显示任务内容并直接返回
                 task_content = task_record.get("original_task", "")
-                status = task_record.get("status", "unknown")
+                status = task_record.get("status", "unknown").strip()  # 去除可能存在的空格
                 print("\n" + "="*60)
                 print(f"历史任务 {task_id}:")
                 print("="*60)
@@ -159,7 +159,7 @@ class TaskManager:
 
         # 显示任务内容并确认
         task_content = task_record.get("original_task", "")
-        status = task_record.get("status", "unknown")
+        status = task_record.get("status", "unknown").strip()  # 去除可能存在的空格
         print("\n" + "="*60)
         print(f"检测到历史任务 {task_id}:")
         print("="*60)

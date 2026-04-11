@@ -44,7 +44,7 @@ def main(project_directory):
 
     # 检测是否有未完成的会话
     pending_session = task_manager.get_last_session()
-    has_pending = pending_session and pending_session['status'] in ('run ', 'fail')
+    has_pending = pending_session and pending_session['status'] in ('run', 'fail')
 
     # 当前选中选项
     current_selection = '1'
@@ -74,13 +74,15 @@ def main(project_directory):
                     continue
                 elif user_input == '4':
                     # 恢复未完成会话
+                    resume_mode = pending_session.get('task_mode', 'short')
                     _run_task(
                         project_dir,
                         logger,
                         pending_session['original_task'],
                         pending_session['session_id'],
                         True,
-                        is_new=False
+                        is_new=False,
+                        task_mode=resume_mode
                     )
                     return
                     # 执行完成后清除未完成状态
@@ -332,7 +334,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
                 continue
 
             task_content = task_record.get("original_task", "")
-            status = task_record.get("status", "unknown")
+            status = task_record.get("status", "unknown").strip()  # 去除可能存在的空格
             history_task_mode = task_record.get("task_mode", "short")  # 任务自己的模式
             mode_display = {'short': '短任务', 'long': '长任务'}
 
@@ -441,7 +443,7 @@ def _check_resume_session(project_dir, task_manager):
     last_session = task_manager.get_last_session()
     resume_session_id = None
 
-    if last_session and last_session['status'] in ('run ', 'fail'):
+    if last_session and last_session['status'] in ('run', 'fail'):
         print("\n" + "!" * 60)
         print("检测到未完成的会话")
         print("!" * 60)

@@ -5,7 +5,7 @@ from langchain_core.messages import BaseMessage, AIMessage, message_to_dict
 from core.common.state_define import AgentState
 from typing import List, Tuple, Dict, Any
 from config.configuration import config
-from utils.token_utils import estimate_tokens, estimate_messages_tokens
+from utils.token_utils import estimate_tokens
 from utils.session_persistence import SessionPersistence
 
 
@@ -31,22 +31,8 @@ class ToolNode:
         messages = state["messages"]
         tool_calls = state["messages"][-1].tool_calls
 
-        # 获取token限制配置
-        context_limit = config.get('model.context_limit', 128000)
-        # token_buffer: 用户配置的值，或默认预留20%
-        token_buffer = config.get('model.token_buffer', int(context_limit * 0.2))
-        safe_threshold = context_limit - token_buffer
-
         tool_results = []
         message_updates = []
-
-        # 计算当前消息的token数
-        current_tokens = estimate_messages_tokens(messages)
-        self.logger.debug(f"当前消息token估算: {current_tokens}, 安全阈值: {safe_threshold}",
-                          extra={'tag': 'TOKEN_CHECK'})
-
-        # 计算历史工具调用次数
-        historical_tool_calls = self._count_historical_tool_calls(messages)
 
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
@@ -64,30 +50,20 @@ class ToolNode:
                 message_updates.extend(result.get("message_updates", []))
 
             else:
-                result = self._execute_normal_tool(
-                    messages, tool_call, current_tokens, safe_threshold, historical_tool_calls
-                )
+                result = self._execute_normal_tool(messages, tool_call)
                 tool_results.extend(result.get("tool_results", []))
                 if result.get("message_updates"):
                     message_updates.extend(result.get("message_updates"))
 
-        # 添加压缩提示（如果需要）
-        compress_prompt_msg = self._generate_compress_prompt(messages, historical_tool_calls)
-        if compress_prompt_msg:
-            tool_results.append(compress_prompt_msg)
+        # 【已移除】压缩提示已移动到 model_node.py 统一处理
+        # 包括：消息数量提示、每5次调用提示、大结果提示
 
         # 保存会话状态
         self._save_session_state(messages, message_updates, tool_results)
 
-        return {"messages": message_updates + tool_results}
-
-    def _count_historical_tool_calls(self, messages: List[BaseMessage]) -> int:
-        """计算历史消息中的工具调用次数"""
-        count = 0
-        for msg in messages:
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                count += len(msg.tool_calls)
-        return count
+        # 注意顺序：必须先返回 tool_results（ToolMessage 响应当前 tool_call），
+        # 然后才是 message_updates（额外的系统提示等）
+        return {"messages": tool_results + message_updates}
 
     def _convert_agent_index_to_state(self, agent_idx: int) -> int:
         """将agent看到的索引转换为state索引（减1）"""
@@ -218,7 +194,7 @@ class ToolNode:
                     new_msg = AIMessage(
                         content=new_content,
                         id=target_msg.id,
-                        tool_calls=getattr(target_msg, "tool_calls", None),
+                        tool_calls=getattr(target_msg, "tool_calls", None) or [],
                         additional_kwargs={
                             **getattr(target_msg, "additional_kwargs", {}),
                             "original_index": state_idx,
@@ -352,7 +328,7 @@ class ToolNode:
             summary_msg = AIMessage(
                 content=f"[段落总结] {summary_text}",
                 id=first_msg.id,
-                tool_calls=None,
+                tool_calls=[],
                 additional_kwargs={
                     **getattr(first_msg, "additional_kwargs", {}),
                     "compressed": True,
@@ -375,10 +351,7 @@ class ToolNode:
             return [], f"段落压缩失败: {e}"
 
     def _execute_normal_tool(self, messages: List[BaseMessage],
-                              tool_call: Dict[str, Any],
-                              current_tokens: int,
-                              safe_threshold: int,
-                              historical_tool_calls: int) -> Dict:
+                              tool_call: Dict[str, Any]) -> Dict:
         """执行普通工具"""
         tool_results = []
         message_updates = []
@@ -394,28 +367,12 @@ class ToolNode:
 
             content = tool.invoke(tool_call["args"])
 
-            # 检查token上限
+            # 【已移除】token上限检查已移动到model_node.py中统一处理
+            # 现在工具执行后不再检查token，而是在发送给模型前统一检查
+
             content_tokens = estimate_tokens(str(content))
-            projected_tokens = current_tokens + content_tokens
-
-            if projected_tokens > safe_threshold:
-                overflow = projected_tokens - config.get('model.context_limit', 128000)
-                warning_content = "【系统提示】当前上下文已接近Token上限，请立即调用压缩工具压缩上下文后再继续。"
-                tool_results.append(ToolMessage(content=warning_content, tool_call_id=tool_call["id"]))
-                self.logger.warning(f"触发Token上限提示: {projected_tokens}>{safe_threshold}", extra={'tag': 'TOKEN_PROMPT'})
-            else:
-                tool_results.append(ToolMessage(content=str(content), tool_call_id=tool_call["id"]))
-                self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
-
-                # 大结果提示
-                if content_tokens > 1000 and historical_tool_calls > 5:
-                    large_result_prompt = (
-                        f"【系统提示】上一个工具调用产生了较大的结果（约{content_tokens} token）。"
-                        f"如果你只需要该结果的部分内容（<30%的连续片段），"
-                        f"请使用单条压缩工具对该结果进行摘要或清空。"
-                    )
-                    message_updates.append(HumanMessage(content=large_result_prompt))
-                    self.logger.info(f"大结果提示: 工具{tool_name}返回{content_tokens}token", extra={'tag': 'LARGE_RESULT_PROMPT'})
+            tool_results.append(ToolMessage(content=str(content), tool_call_id=tool_call["id"]))
+            self.logger.info(f"工具 {tool_name} 执行成功", extra={'tag': 'TOOL_SUCCESS'})
 
         except Exception as e:
             content = f"工具 {tool_name} 执行出错: {e}"
@@ -423,37 +380,6 @@ class ToolNode:
             self.logger.error(content, extra={'tag': 'TOOL_FAILURE'})
 
         return {"tool_results": tool_results, "message_updates": message_updates}
-
-    def _generate_compress_prompt(self, messages: List[BaseMessage],
-                                   historical_tool_calls: int) -> HumanMessage:
-        """生成压缩提示消息（如果需要）"""
-        message_count = len(messages)
-
-        # 优先级1：消息数量超过100条
-        if message_count >= 100:
-            has_msg_count_prompt = any(
-                isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】当前对话消息数")
-                for msg in messages
-            )
-            if not has_msg_count_prompt:
-                self.logger.info(f"触发消息数量压缩提示({message_count}条消息)", extra={'tag': 'COMPRESS_MSG_COUNT'})
-                return HumanMessage(
-                    content=f"【系统提示】当前对话消息数已达{message_count}条，已超过100条。请立即调用压缩工具压缩上下文后再继续。"
-                )
-
-        # 优先级2：每5次工具调用后
-        if historical_tool_calls % 5 == 0 and historical_tool_calls > 0:
-            has_compress_prompt = any(
-                isinstance(msg, HumanMessage) and msg.content.startswith("【系统提示】已进行")
-                for msg in messages
-            )
-            if not has_compress_prompt:
-                self.logger.info(f"触发压缩评估提示(累计{historical_tool_calls}次工具调用)", extra={'tag': 'COMPRESS_PROMPT'})
-                return HumanMessage(
-                    content=f"【系统提示】已进行{historical_tool_calls}次工具调用，请评估是否需要压缩上下文"
-                )
-
-        return None
 
     def _save_session_state(self, messages: List[BaseMessage],
                             message_updates: List[BaseMessage],
