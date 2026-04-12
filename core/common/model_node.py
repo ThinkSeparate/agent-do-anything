@@ -9,6 +9,56 @@ import json
 from openai import BadRequestError as OpenAIBadRequestError
 
 
+def _assign_index(msg, next_index: int) -> int:
+    """
+    为消息分配固定索引。
+    如果消息已有索引则保持不变，否则分配新索引并存储在 msg.index 中。
+    返回下一个可用的索引。
+    """
+    if hasattr(msg, 'index') and msg.index is not None:
+        return max(next_index, msg.index + 1)
+    # 分配新索引
+    msg.index = next_index
+    return next_index + 1
+
+
+def _get_max_index(messages) -> int:
+    """从消息列表中获取最大索引"""
+    max_idx = 0
+    for msg in messages:
+        if hasattr(msg, 'index') and msg.index is not None:
+            max_idx = max(max_idx, msg.index)
+    return max_idx
+
+
+def _format_message_for_model(msg) -> str:
+    """
+    将消息格式化为带索引的字符串格式，用于发送给模型。
+    格式: index: X\ncontent: Z
+    """
+    from langchain.messages import ToolMessage, AIMessage
+
+    index = getattr(msg, 'index', '?')
+
+    # 构建键值对格式的内容
+    lines = [f"index: {index}"]
+
+    # ToolMessage 添加 tool_call_id
+    if isinstance(msg, ToolMessage):
+        lines.append(f"tool_call_id: {msg.tool_call_id}")
+
+    # 添加原始 content
+    lines.append(f"content: {msg.content or ''}")
+
+    # AIMessage 有 tool_calls 时添加
+    if isinstance(msg, AIMessage):
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            lines.append(f"tool_calls: {tool_calls}")
+
+    return "\n".join(lines)
+
+
 def create_model_node(model_with_tools, system_prompt: str):
     """
     创建模型调用节点。
@@ -24,8 +74,49 @@ def create_model_node(model_with_tools, system_prompt: str):
         """调用 LLM 获取响应，并记录详细日志。"""
         logger.info("正在向模型发送请求...", extra={'tag': 'MODEL_REQUEST'})
 
-        # 准备消息（基础消息，不包含SystemMessage，由process_messages_before_send添加）
-        messages_to_send = [SystemMessage(content=system_prompt)] + state["messages"]
+        # 1. 为没有索引的消息分配索引（直接修改原始消息）
+        next_index = _get_max_index(state["messages"]) + 1
+        for msg in state["messages"]:
+            next_index = _assign_index(msg, next_index)
+
+        # 2. 创建带索引标记的消息副本用于发送给模型
+        formatted_messages = []
+        for msg in state["messages"]:
+            formatted_content = _format_message_for_model(msg)
+            # 创建副本，只修改 content
+            if isinstance(msg, HumanMessage):
+                formatted_msg = HumanMessage(
+                    content=formatted_content,
+                    id=msg.id,
+                    additional_kwargs=dict(getattr(msg, "additional_kwargs", {}))
+                )
+                formatted_msg.index = msg.index  # 复制 index
+            elif isinstance(msg, AIMessage):
+                formatted_msg = AIMessage(
+                    content=formatted_content,
+                    id=msg.id,
+                    tool_calls=getattr(msg, "tool_calls", None),
+                    additional_kwargs=dict(getattr(msg, "additional_kwargs", {}))
+                )
+                formatted_msg.index = msg.index
+            elif isinstance(msg, RemoveMessage):
+                formatted_msg = RemoveMessage(id=msg.id)
+            else:
+                # ToolMessage 或其他类型
+                from langchain.messages import ToolMessage
+                if isinstance(msg, ToolMessage):
+                    formatted_msg = ToolMessage(
+                        content=formatted_content,
+                        tool_call_id=msg.tool_call_id,
+                        id=msg.id,
+                        additional_kwargs=dict(getattr(msg, "additional_kwargs", {}))
+                    )
+                    formatted_msg.index = msg.index
+                else:
+                    formatted_msg = msg
+            formatted_messages.append(formatted_msg)
+
+        messages_to_send = [SystemMessage(content=system_prompt)] + formatted_messages
 
         # 调用模型（带重试逻辑，每次重试前统一处理消息）
         max_retries = 3
@@ -161,12 +252,20 @@ def create_model_node(model_with_tools, system_prompt: str):
         if not response.content or not response.content.strip():
             if not getattr(response, 'tool_calls', None):
                 logger.warning("模型返回空响应且无工具调用，提示模型继续", extra={'tag': 'MODEL_EMPTY'})
+                # 计算新消息的索引（基于当前最大索引+1）
+                max_idx = _get_max_index(state["messages"])
                 prompt_msg = HumanMessage(
                     content="你的上一步没有输出内容或调用工具。请继续思考并采取行动，或调用 submit_final_answer 结束任务。"
                 )
+                prompt_msg.index = max_idx + 1  # 分配索引
                 return {"messages": [prompt_msg]}
 
-        # 9. 记录其他调试/信息日志
+        # 9. 给模型响应消息分配索引
+        max_idx = _get_max_index(state["messages"])
+        if not hasattr(response, 'index') or response.index is None:
+            response.index = max_idx + 1
+
+        # 10. 记录其他调试/信息日志
         logger.info(f"发送消息数量: {len(processed_messages)}", extra={'tag': 'MESSAGES'})
         reasoning_content = getattr(response, 'reasoning_content', None)
         if reasoning_content:

@@ -9,8 +9,6 @@ from utils.token_utils import estimate_tokens
 from utils.session_persistence import SessionPersistence
 
 
-
-
 class ToolNode:
     """
     工具执行节点，包含压缩功能和状态持久化。
@@ -25,6 +23,22 @@ class ToolNode:
         self.session_id = session_id
         self.logger = logging.getLogger(__name__)
         self.persistence = SessionPersistence(project_directory) if project_directory else None
+
+    def _assign_index_to_messages(self, messages: List[BaseMessage], existing_messages: List[BaseMessage]) -> int:
+        """为新消息分配索引，基于现有消息的最大索引"""
+        # 计算现有消息的最大索引
+        max_idx = 0
+        for msg in existing_messages:
+            if hasattr(msg, 'index') and msg.index is not None:
+                max_idx = max(max_idx, msg.index)
+
+        # 给没有索引的新消息分配索引
+        for msg in messages:
+            if not hasattr(msg, 'index') or msg.index is None:
+                max_idx += 1
+                msg.index = max_idx
+
+        return max_idx
 
     def __call__(self, state: AgentState) -> dict:
         """主入口：执行工具调用"""
@@ -57,6 +71,10 @@ class ToolNode:
 
         # 【已移除】压缩提示已移动到 model_node.py 统一处理
         # 包括：消息数量提示、每5次调用提示、大结果提示
+
+        # 为新消息分配索引（基于当前state中的最大索引）
+        all_new_messages = tool_results + message_updates
+        self._assign_index_to_messages(all_new_messages, messages)
 
         # 保存会话状态
         self._save_session_state(messages, message_updates, tool_results)
@@ -169,6 +187,10 @@ class ToolNode:
         return {"tool_results": tool_results, "message_updates": message_updates}
 
     def _gen_new_msg(self, state_idx, op_type, target_msg, new_content):
+        """生成压缩后的新消息，保持 index 不变，只更新 content"""
+        # 获取原消息的 index
+        original_index = getattr(target_msg, 'index', None)
+
         kwargs = {
             "content": new_content,
             "additional_kwargs": {
@@ -177,22 +199,29 @@ class ToolNode:
                 "compressed": True
             }
         }
+
         if isinstance(target_msg, ToolMessage):
-            return ToolMessage(
+            new_msg = ToolMessage(
                 tool_call_id=target_msg.tool_call_id,
                 id=target_msg.id,
                 **kwargs
             )
         elif isinstance(target_msg, AIMessage):
-            return AIMessage(
+            new_msg = AIMessage(
                 id=target_msg.id,
                 tool_calls=getattr(target_msg, "tool_calls", None) or [],
                 **kwargs
             )
         else:
+            # HumanMessage 或其他类型
             target_msg.content = new_content
             target_msg.additional_kwargs = kwargs["additional_kwargs"]
             return target_msg
+
+        # 复制 index 属性到新消息
+        if original_index is not None:
+            new_msg.index = original_index
+        return new_msg
     
 
     def _execute_compress_paragraph(self, messages: List[BaseMessage],
@@ -298,6 +327,9 @@ class ToolNode:
         try:
             # 使用 start_idx 消息的ID创建总结消息
             first_msg = messages[start_idx]
+            # 保持原消息的 index，只更新 content 为段落总结
+            first_msg_index = getattr(first_msg, 'index', None)
+
             summary_msg = AIMessage(
                 content=f"[段落总结] {summary_text}",
                 id=first_msg.id,
@@ -309,6 +341,9 @@ class ToolNode:
                     "original_range": f"{start_idx}-{end_idx}"
                 }
             )
+            # 复制 index 属性
+            if first_msg_index is not None:
+                summary_msg.index = first_msg_index
             updates.append(summary_msg)
 
             # 删除其余消息
