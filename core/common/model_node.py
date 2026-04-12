@@ -254,8 +254,9 @@ def create_model_node(model_with_tools, system_prompt: str):
                 logger.warning("模型返回空响应且无工具调用，提示模型继续", extra={'tag': 'MODEL_EMPTY'})
                 # 计算新消息的索引（基于当前最大索引+1）
                 max_idx = _get_max_index(state["messages"])
+                # 使用 HumanMessage 伪装成用户提示，模型理解最自然
                 prompt_msg = HumanMessage(
-                    content="你的上一步没有输出内容或调用工具。请继续思考并采取行动，或调用 submit_final_answer 结束任务。"
+                    content="【系统提示】你的上一步没有输出内容或调用工具。请继续思考并采取行动，或调用 submit_final_answer 结束任务。"
                 )
                 prompt_msg.index = max_idx + 1  # 分配索引
                 return {"messages": [prompt_msg]}

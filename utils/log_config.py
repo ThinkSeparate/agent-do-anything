@@ -152,7 +152,7 @@ def format_messages_for_log(messages):
         
         # 获取内容
         content = msg.content if hasattr(msg, 'content') else str(msg)
-        formatted_lines.append(f"[{i}] {role}\n{content}\n")
+        formatted_lines.append(f"role: {role}\n{content}\n\n")
     
     return "".join(formatted_lines)
 
