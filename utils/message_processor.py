@@ -351,8 +351,8 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
         content_tokens = estimate_tokens(str(last_content))
         total_tokens = estimate_messages_tokens(messages)
 
-        # 大结果提示：>2000 token、总token>20000、且历史调用次数 > 5
-        if (content_tokens > 2000 and
+        # 大结果提示：>5000 token、总token>20000、且历史调用次数 > 5
+        if (content_tokens > 5000 and
             total_tokens > 20000 and
             historical_calls > 5 and
             not has_prompt("【系统提示】上一个工具调用")):
@@ -433,38 +433,5 @@ def process_messages_before_send(
     info["final_token"] = estimate_messages_tokens(result)
     logger.info(f"process_messages_before_send 处理后: {info['final_token']} tokens (截断={info['truncated']}, 验证={info['validated']}, 提示={info['prompts_added']})",
                 extra={'tag': 'MSG_PROCESS_END'})
-
-    # # 构造 API 请求预览
-    # try:
-    #     from langchain_core.messages import message_to_dict
-    #     from utils.token_utils import get_tools_for_api, get_tools_token_count
-    #     from config.configuration import config
-
-    #     api_request = {
-    #         "model": config.get('model.name', 'unknown'),
-    #         "messages": [message_to_dict(m) for m in result],
-    #         "tools": get_tools_for_api(),
-    #         "stream": False
-    #     }
-
-    #     tools_token = get_tools_token_count()
-    #     total_estimated = info["final_token"] + tools_token
-
-    #     logger.info(
-    #         f"API请求构造: 消息≈{info['final_token']} tokens, 工具≈{tools_token} tokens, "
-    #         f"总计≈{total_estimated} tokens",
-    #         extra={'tag': 'API_REQUEST_PREVIEW'}
-    #     )
-    #     logger.info(
-    #         f"完整API请求体:\n{__import__('json').dumps(api_request, ensure_ascii=False, indent=2)}",
-    #         extra={'tag': 'API_REQUEST_JSON'}
-    #     )
-
-    #     # 将构造的请求保存到 info 中
-    #     info["api_request"] = api_request
-    #     info["estimated_total_tokens"] = total_estimated
-
-    # except Exception as e:
-    #     logger.warning(f"构造API请求预览失败: {e}", extra={'tag': 'API_REQUEST_PREVIEW_ERROR'})
 
     return result, info
