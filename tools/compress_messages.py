@@ -6,14 +6,14 @@ from typing import List, Dict, Any
 @tool
 def compress_messages(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    单条消息压缩。operations每项包含：message_index, operation("clear"/"summarize"), summary_text（summarize时需要）。
-    禁止修改索引0（系统消息）和索引1（用户消息）。
+    单条消息压缩。operations每项包含：index, operation("clear"/"summarize"), summary_text（summarize时需要）。
+    禁止修改index:1（用户初始任务）。
     """
     validated_ops = []
     for op in operations:
         if not isinstance(op, dict):
             continue
-        msg_idx = op.get("message_index")
+        msg_idx = op.get("index")
         op_type = op.get("operation")
         if msg_idx is None or op_type not in ["clear", "summarize"]:
             continue
@@ -32,7 +32,8 @@ def compress_messages(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
 def compress_paragraph(start_index: int, end_index: int, summary: str) -> Dict[str, Any]:
     """
     段落压缩。消息数>20时才允许使用。将start_index到end_index范围的消息整体总结替换。
-    禁止包含索引0（系统消息）和索引1（用户消息）。
+    start_index必须是工具调用消息(AIMessage且有tool_calls)，end_index必须是工具返回消息(ToolMessage)。
+    禁止包含index:1（用户初始任务）。
     """
     if not isinstance(start_index, int) or not isinstance(end_index, int):
         return {"type": "compress_paragraph_request", "valid": False, "message": "start_index和end_index必须是整数"}

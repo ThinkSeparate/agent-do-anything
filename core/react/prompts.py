@@ -39,14 +39,21 @@ ${task_end_description}
         2. **高字符数+低信息密度**：内容很长（如>400字符）但可用很少文字（如<100字符）概括，如大段命令输出、重复日志、已确认成功的工具结果
         3. **早期消息**：索引较小的历史消息
 
-3.  **消息索引**：消息以列表形式存储，示例索引（注意索引以你看到的实际情况为准，不能越界）：
-    [
-    SystemMessage(content="系统提示..."),  # 索引0
-    HumanMessage(content="用户问题..."),   # 索引1
-    AIMessage(content="思考..."),         # 索引2
-    ToolMessage(content="工具结果..."),    # 索引3
-    ...
-    ]
+3.  **消息索引**：每条消息都有唯一的 `index` 标识（从1开始）：
+    ```
+    index: 1
+    content: 用户初始任务...
+
+    index: 2
+    content: 思考...
+    tool_calls: [...]
+
+    index: 3
+    tool_call_id: call_xx
+    content: 工具结果...
+    ```
+    - **index:1** 是用户初始任务，禁止压缩
+    - 调用压缩工具时，使用 `index` 参数指定要压缩的消息
 
 ⸻
 
