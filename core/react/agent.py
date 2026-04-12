@@ -36,7 +36,7 @@ class ReActAgent:
         agent_utils.load_agent_config(required_keys)
 
         # 从配置中读取路径
-        self.agent_output_root = agent_utils.get_agent_output_root(self.project_directory, config.get('agent.output_root'))
+        self.agent_output_root = agent_utils.get_agent_output_root(config.get('agent.output_root'), self.project_directory)
         configure_agent_output_root(lambda: self.agent_output_root)
         self.logger.info(f"已从配置加载safe写入目录: {self.agent_output_root}", extra={'tag': 'AGENT_INIT'})
 

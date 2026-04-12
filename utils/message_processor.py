@@ -338,26 +338,29 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
 
     # 2. 每5次调用检查
     historical_calls = _count_historical_tool_calls(messages)
-    if historical_calls % 5 == 0 and historical_calls > 0 and not has_prompt("【系统提示】已进行"):
+    if historical_calls >= 10 and historical_calls % 5 == 0 and not has_prompt("【系统提示】已进行"):
         prompts.append(HumanMessage(
-            content=f"【系统提示】已进行{historical_calls}次工具调用，请评估是否需要压缩上下文"
+            content=f"【系统提示】已进行{historical_calls}次工具调用，建议执行一次上下文压缩以保持对话效率"
         ))
-        logger.info(f"触发压缩评估提示(累计{historical_calls}次工具调用)", extra={"tag": "COMPRESS_PROMPT"})
+        logger.info(f"触发压缩建议提示(累计{historical_calls}次工具调用)", extra={"tag": "COMPRESS_PROMPT"})
         return prompts  # 避免同时触发多个提示
 
-    # 3. 大结果检查（最后一条是 ToolMessage 且内容较大）
+    # 3. 大结果检查（最后一条是 ToolMessage 且内容较大，且总token>20000时才频繁提醒）
     if messages and isinstance(messages[-1], ToolMessage):
         last_content = messages[-1].content
         content_tokens = estimate_tokens(str(last_content))
+        total_tokens = estimate_messages_tokens(messages)
 
-        # 大结果提示：>1000 token 且历史调用次数 > 5
-        if content_tokens > 1000 and historical_calls > 5 and not has_prompt("【系统提示】上一个工具调用"):
+        # 大结果提示：>2000 token、总token>20000、且历史调用次数 > 5
+        if (content_tokens > 2000 and
+            total_tokens > 20000 and
+            historical_calls > 5 and
+            not has_prompt("【系统提示】上一个工具调用")):
             prompts.append(HumanMessage(
                 content=f"【系统提示】上一个工具调用产生了较大的结果（约{content_tokens} token）。"
-                        f"如果你只需要该结果的部分内容（<30%的连续片段），"
-                        f"请使用单条压缩工具对该结果进行摘要或清空。"
+                        f"建议压缩其他历史消息或对该结果进行摘要/清空，以节省上下文空间。"
             ))
-            logger.info(f"大结果提示: 返回{content_tokens}token", extra={"tag": "LARGE_RESULT_PROMPT"})
+            logger.info(f"大结果提示: 返回{content_tokens}token, 总token={total_tokens}", extra={"tag": "LARGE_RESULT_PROMPT"})
 
     return prompts
 

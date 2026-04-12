@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 
 
 @tool
-def compress_message(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+def compress_messages(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     单条消息压缩。operations每项包含：message_index, operation("clear"/"summarize"), summary_text（summarize时需要）。
     禁止修改索引0（系统消息）和索引1（用户消息）。
@@ -48,7 +48,4 @@ def compress_paragraph(start_index: int, end_index: int, summary: str) -> Dict[s
     }
 
 
-# 保持向后兼容的别名
-compress_messages = compress_message
-
-compress_tools = [compress_message, compress_paragraph]
+compress_tools = [compress_messages, compress_paragraph]
