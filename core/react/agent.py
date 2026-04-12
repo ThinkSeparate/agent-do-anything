@@ -118,6 +118,14 @@ class ReActAgent:
             saved_state = persistence.load_state(session_id)
             if saved_state:
                 messages = messages_from_dict(saved_state["messages"])
+                # 【关键修复】过滤掉 RemoveMessage，避免重复删除已不存在的消息
+                from langchain.messages import RemoveMessage
+                original_count = len(messages)
+                messages = [m for m in messages if not isinstance(m, RemoveMessage)]
+                filtered_count = original_count - len(messages)
+                if filtered_count > 0:
+                    self.logger.info(f"会话恢复: 过滤掉 {filtered_count} 条 RemoveMessage",
+                                   extra={'tag': 'RESUME_FILTER'})
                 # 【已迁移】消息处理已统一到 model_node.py 中处理
                 # 包括：验证修复、token截断、生成提示
                 consecutive_failures = saved_state.get("consecutive_failures", 0)

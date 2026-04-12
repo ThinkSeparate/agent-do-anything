@@ -285,10 +285,14 @@ def create_model_node(model_with_tools, system_prompt: str):
 
         return_messages = [response]
         if removed_ids:
-            for rid in removed_ids:
+            # 【修复】只删除当前 state 中确实存在的消息，避免重复删除导致错误
+            current_state_msg_ids = {getattr(m, 'id', None) for m in state["messages"] if getattr(m, 'id', None)}
+            valid_removed_ids = removed_ids & current_state_msg_ids
+            for rid in valid_removed_ids:
                 return_messages.insert(0, RemoveMessage(id=rid))
                 logger.debug(f"标记删除被截断的消息: {rid}", extra={'tag': 'MSG_REMOVED'})
-            logger.info(f"截断持久化: 从state中移除 {len(removed_ids)} 条消息", extra={'tag': 'TRUNCATE_PERSIST'})
+            if valid_removed_ids:
+                logger.info(f"截断持久化: 从state中移除 {len(valid_removed_ids)} 条消息", extra={'tag': 'TRUNCATE_PERSIST'})
 
         return {"messages": return_messages}
 

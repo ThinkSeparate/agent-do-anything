@@ -265,7 +265,7 @@ def _get_large_messages_list(messages: list) -> list:
         preview = str(getattr(msg, 'content', ''))[:30].replace('\n', ' ')
         if len(str(getattr(msg, 'content', '') or '')) > 30:
             preview += "..."
-        all_msgs.append((i, msg_type, token_count, preview))
+        all_msgs.append((msg.index, msg_type, token_count, preview))
     all_msgs.sort(key=lambda x: x[2], reverse=True)
     return all_msgs[:5]
 
@@ -304,7 +304,7 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
 
     if usage_ratio >= warn_threshold and not has_prompt("【系统提示】上下文Token使用率"):
         # 获取大消息列表（超过 context_limit 10% 的消息）
-        large_msgs = _get_large_messages_list(messages, context_limit, threshold_ratio=0.1)
+        large_msgs = _get_large_messages_list(messages)
 
         # 构建提示内容
         prompt_content = (
@@ -326,21 +326,22 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
         logger.info(f"触发Token告警提示({usage_ratio*100:.1f}%), 发现{len(large_msgs)}条大消息", extra={"tag": "TOKEN_WARN"})
         return prompts  # 最高优先级，直接返回
 
-    # 1. 消息数量检查（次高优先级）
-    msg_count = len(messages)
-    if msg_count >= 100 and not has_prompt("【系统提示】当前对话消息数"):
-        prompts.append(HumanMessage(
-            content=f"【系统提示】当前对话消息数已达{msg_count}条，已超过100条。"
-                    f"请立即调用压缩工具压缩上下文后再继续。"
-        ))
-        logger.info(f"触发消息数量压缩提示({msg_count}条消息)", extra={"tag": "COMPRESS_MSG_COUNT"})
-        return prompts  # 优先返回，避免信息过载
+    # # 1. 消息数量检查（次高优先级）
+    # msg_count = len(messages)
+    # if msg_count >= 100 and content_tokens > context_limit * 0.6 and not has_prompt("【系统提示】当前对话消息数"):
+    #     prompts.append(HumanMessage(
+    #         content=f"【系统提示】当前对话消息数已达{msg_count}条，已超过100条。"
+    #                 f"请立即调用压缩工具压缩上下文后再继续。"
+    #     ))
+    #     logger.info(f"触发消息数量压缩提示({msg_count}条消息)", extra={"tag": "COMPRESS_MSG_COUNT"})
+    #     return prompts  # 优先返回，避免信息过载
 
-    # 2. 每5次调用检查
+    # 2. 每10次调用检查
     historical_calls = _count_historical_tool_calls(messages)
-    if historical_calls >= 10 and historical_calls % 5 == 0 and not has_prompt("【系统提示】已进行"):
+    if historical_calls % 10 == 0 and not has_prompt("【系统提示】已进行"):
         prompts.append(HumanMessage(
-            content=f"【系统提示】已进行{historical_calls}次工具调用，建议执行一次上下文压缩以保持对话效率"
+            content=f"【系统提示】对话已进行{historical_calls}次工具调用，上下文可能持续增长。" 
+                f"请注意管理上下文长度，并依据‘效率规则’评估是否有足够多的可压缩内容（如早期步骤、冗长结果），以决定是否执行压缩。"
         ))
         logger.info(f"触发压缩建议提示(累计{historical_calls}次工具调用)", extra={"tag": "COMPRESS_PROMPT"})
         return prompts  # 避免同时触发多个提示
@@ -351,14 +352,14 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
         content_tokens = estimate_tokens(str(last_content))
         total_tokens = estimate_messages_tokens(messages)
 
-        # 大结果提示：>5000 token、总token>20000、且历史调用次数 > 5
+        # 大结果提示：>5000 token、总token>20000、且历史调用次数 > 6
         if (content_tokens > 5000 and
             total_tokens > 20000 and
-            historical_calls > 5 and
+            historical_calls > 10 and
             not has_prompt("【系统提示】上一个工具调用")):
             prompts.append(HumanMessage(
-                content=f"【系统提示】上一个工具调用产生了较大的结果（约{content_tokens} token）。"
-                        f"建议压缩其他历史消息或对该结果进行摘要/清空，以节省上下文空间。"
+                f"【系统提示】上一个工具调用产生了较大的结果（约{content_tokens} token），导致上下文显著增长。\n" \
+                    f"请注意管理上下文长度，并依据压缩规则判断是否需要、以及对哪些历史消息采取压缩操作。"
             ))
             logger.info(f"大结果提示: 返回{content_tokens}token, 总token={total_tokens}", extra={"tag": "LARGE_RESULT_PROMPT"})
 
