@@ -442,15 +442,12 @@ class SandboxExecutor:
     def _execute_with_timeout(self, command: str, timeout: int, start_time: float) -> ExecutionResult:
         """带超时控制的命令执行"""
         try:
-            # 使用subprocess执行
+            # 使用subprocess执行（先读字节，再自适应解码，避免Windows编码问题）
             process = subprocess.Popen(
                 command,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
             )
 
             # 资源监控
@@ -485,10 +482,24 @@ class SandboxExecutor:
             monitor_thread.daemon = True
             monitor_thread.start()
 
+            def _decode_output(data: bytes) -> str:
+                """自适应解码：优先UTF-8，失败回退GBK"""
+                if not data:
+                    return ""
+                try:
+                    return data.decode('utf-8')
+                except UnicodeDecodeError:
+                    try:
+                        return data.decode('gbk', errors='ignore')
+                    except UnicodeDecodeError:
+                        return data.decode('utf-8', errors='ignore')
+
             # 等待执行完成或超时
             try:
-                stdout, stderr = process.communicate(timeout=timeout)
+                stdout_bytes, stderr_bytes = process.communicate(timeout=timeout)
                 execution_time = time.time() - start_time
+                stdout = _decode_output(stdout_bytes)
+                stderr = _decode_output(stderr_bytes)
 
                 return ExecutionResult(
                     success=process.returncode == 0,
@@ -499,13 +510,15 @@ class SandboxExecutor:
                 )
             except subprocess.TimeoutExpired:
                 process.kill()
-                stdout, stderr = process.communicate()
+                stdout_bytes, stderr_bytes = process.communicate()
                 execution_time = time.time() - start_time
+                stdout = _decode_output(stdout_bytes)
+                stderr = _decode_output(stderr_bytes)
 
                 return ExecutionResult(
                     success=False,
                     stdout=stdout,
-                    stderr=f"命令执行超时（{timeout}秒）",
+                    stderr=f"命令执行超时（{timeout}秒）\n{stderr}",
                     returncode=-1,
                     execution_time=execution_time
                 )

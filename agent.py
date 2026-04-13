@@ -265,6 +265,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
 
     page_size = 20
     offset = max(0, total_count - page_size)
+    show_full = False
 
     while True:
         tasks = task_manager.persistence.list_sessions(limit=page_size, offset=offset)
@@ -272,9 +273,10 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
         if tasks:
             start_id = tasks[0].get("session_id", "N/A") if tasks else "N/A"
             end_id = tasks[-1].get("session_id", "N/A") if tasks else "N/A"
+            display_mode = "完整描述" if show_full else "简略列表"
 
             print("\n" + "=" * 80)
-            print(f"历史任务列表 (共{total_count}个，显示ID {start_id}-{end_id})")
+            print(f"历史任务{display_mode} (共{total_count}个，显示ID {start_id}-{end_id})")
             print("=" * 80)
 
             for task_record in tasks:
@@ -292,7 +294,7 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
                     except:
                         pass
 
-                preview = task_content[:50] + "..." if len(task_content) > 50 else task_content
+                preview = task_content if show_full else (task_content[:50] + "..." if len(task_content) > 50 else task_content)
                 status_word = status[:4] if len(status) >= 4 else status.ljust(4)
                 mode_indicator = "L" if task_mode == "long" else "S"
 
@@ -306,6 +308,10 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
         print("\n" + "-" * 60)
         print("操作:")
         print("  [编号] 输入编号查看任务详情")
+        if show_full:
+            print("  [a] 切换为简略显示")
+        else:
+            print("  [a] 切换为完整显示")
         if offset > 0:
             print("  [p] 向上翻页（查看更早的）")
         if offset + page_size < total_count:
@@ -327,6 +333,10 @@ def _handle_history_selection(task_manager, global_task_mode: str = 'short') -> 
 
         if choice.lower() == 'n' and offset + page_size < total_count:
             offset = min(total_count - page_size, offset + page_size)
+            continue
+
+        if choice.lower() == 'a':
+            show_full = not show_full
             continue
 
         if choice.isdigit():
