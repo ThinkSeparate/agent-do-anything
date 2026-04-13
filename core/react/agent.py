@@ -73,9 +73,9 @@ class ReActAgent:
 
         # 根据模式选择结束工具名称和描述
         if task_mode == 'long':
-            task_end_tool = 'wait_for_next_task'
-            task_end_description = '''    - **当你完成Current步骤或需要用户进一步指示时，调用 `${task_end_tool}` 工具。** 调用此工具后，你将等待用户的下一步输入，任务不会结束，而是进入下一个迭代周期。'''
-            task_end_rule = '''**只有 `${task_end_tool}` 工具能正式暂停任务等待用户输入。** 不要在思考中直接写出答案，也不要用其他工具来返回答案。长任务模式下，你将多次与用户交互直到用户输入 "done" 结束任务。'''
+            task_end_tool = 'submit_sub_task'
+            task_end_description = '''    - **当你完成Current子任务时，调用 `${task_end_tool}` 工具提交完成内容。** 调用此工具后，系统将记录你的完成内容并等待用户的下一步输入，任务不会结束，而是进入下一个迭代周期。'''
+            task_end_rule = '''**只有 `${task_end_tool}` 工具能正式提交子任务并等待用户输入。** 不要在思考中直接写出答案，也不要用其他工具来返回答案。长任务模式下，你将多次与用户交互直到用户输入 "done" 结束任务。'''
         else:
             task_end_tool = 'submit_final_answer'
             task_end_description = '''    - **如果你确信已收集到所有必要信息，可以回答用户最初的问题，则调用 `${task_end_tool}` 工具来交付最终答案。** 调用此工具意味着任务结束。'''
@@ -216,62 +216,113 @@ class ReActAgent:
     def _run_long_task(self, initial_state, persistence, session_id):
         """长任务模式：支持多次迭代，直到用户输入 done"""
         from langchain.messages import HumanMessage, ToolMessage
+        from langchain_core.messages import message_to_dict
 
         current_state = initial_state
-        sub_task_count = 0
 
         # 从数据库读取总任务
         session_info = persistence.get_session(session_id)
         original_task = session_info.get('original_task', '') if session_info else ''
 
+        def _is_sub_task_tool_message(messages):
+            """启发式检查：最后消息是否为 submit_sub_task 的结果"""
+            if not messages or not isinstance(messages[-1], ToolMessage):
+                return False
+            for i in range(len(messages) - 2, -1, -1):
+                msg = messages[i]
+                if isinstance(msg, AIMessage):
+                    for tc in msg.tool_calls or []:
+                        if (tc.get("name") == "submit_sub_task" and
+                                tc.get("id") == getattr(messages[-1], "tool_call_id", None)):
+                            return True
+                    break
+            return False
+
         while True:
-            # 执行一次图
-            final_state = self.graph.invoke(current_state)
+            messages = current_state["messages"]
 
-            messages = final_state["messages"]
-            last_message = messages[-1]
+            # ── 恢复检查：如果已处于 waiting_for_input，或消息显示子任务刚完成，跳过图执行 ──
+            has_waiting_meta = current_state.get("long_task_meta", {}).get("status") == "waiting_for_input"
+            has_tool_waiting = _is_sub_task_tool_message(messages)
 
-            # 检查是否是 wait_for_next_task 返回的结果
-            # wait_for_next_task 工具返回的内容包含用户的输入
-            if last_message.content:
-                user_response = last_message.content.strip()
-
-                # 如果用户输入 done，结束长任务
-                if user_response.lower() == 'done':
-                    self.logger.info("用户输入 done，结束长任务", extra={'tag': 'LONG_TASK_END'})
-                    # 标记会话完成
-                    if session_id:
-                        persistence.mark_completed(session_id)
-                    self.logger.info(f"长任务执行完成，共 {sub_task_count} 个子任务",
-                                    extra={'tag': 'TASK_END'})
-                    return f"长任务已完成。共执行 {sub_task_count} 个子任务。"
-
-                # 否则，将用户响应作为新任务继续
-                sub_task_count += 1
-                self.logger.info(f"继续长任务第 {sub_task_count} 个子任务",
-                               extra={'tag': 'LONG_TASK_CONTINUE'})
-
-                # 构造新的 message0：【总任务】+【Current子任务】
-                new_message0_content = f"【总任务】{original_task}\n【Current子任务】{user_response}"
-                new_message0 = HumanMessage(content=new_message0_content)
-
-                # 构建新状态：
-                # [0] 新的 message0（替换原消息）
-                # [1..n] 原消息（Kept所有历史，包括之前的 tool_calls 和 ToolMessage）
-                # [新] HumanMessage: 用户新输入作为下一个子任务
-                old_messages = messages[1:] if len(messages) > 0 else []
-
-                # 用户新输入作为 HumanMessage
-                user_msg = HumanMessage(content=user_response)
-
-                new_messages = [new_message0] + old_messages + [user_msg]
-
-                current_state = {
-                    "messages": new_messages,
-                    "consecutive_failures": 0,
-                }
-                continue
+            if has_waiting_meta or has_tool_waiting:
+                if has_tool_waiting and not has_waiting_meta:
+                    self.logger.info(
+                        "恢复长任务：通过消息推断子任务已完成，等待用户输入",
+                        extra={'tag': 'LONG_TASK_RESUME_WAIT'}
+                    )
+                    # 补全 meta，保持后续逻辑一致
+                    current_state = {**current_state, "long_task_meta": {"status": "waiting_for_input"}}
+                    messages = current_state["messages"]
+                else:
+                    self.logger.info(
+                        "恢复长任务：子任务已完成，等待用户输入",
+                        extra={'tag': 'LONG_TASK_RESUME_WAIT'}
+                    )
             else:
-                # 没有返回内容，可能是异常情况，不标记完成，保持run状态
-                self.logger.warning("长任务异常结束：没有返回内容", extra={'tag': 'LONG_TASK_ABNORMAL_END'})
-                return "任务异常结束。会话保持运行状态，可尝试恢复。"
+                # 执行一次图（一个子任务）
+                final_state = self.graph.invoke(current_state)
+                messages = final_state["messages"]
+                last_message = messages[-1]
+
+                # 安全检查：最后一条应为 submit_sub_task 返回的 ToolMessage
+                if not isinstance(last_message, ToolMessage):
+                    self.logger.warning(
+                        "长任务异常结束：最后消息不是工具结果，保持运行状态",
+                        extra={'tag': 'LONG_TASK_ABNORMAL_END'}
+                    )
+                    return "任务异常结束。会话保持运行状态，可尝试恢复。"
+
+                # 子任务完成后，显式保存 checkpoint
+                checkpoint_state = {
+                    "messages": [message_to_dict(m) for m in messages],
+                    "consecutive_failures": final_state.get("consecutive_failures", 0),
+                    "long_task_meta": {"status": "waiting_for_input"}
+                }
+                persistence.save_state(session_id, checkpoint_state)
+                self.logger.info(
+                    "子任务完成，已保存等待输入 checkpoint",
+                    extra={'tag': 'LONG_TASK_CHECKPOINT'}
+                )
+
+            # ── 获取用户下一个指令（在此退出程序是安全的）──
+            sub_task_result = messages[-1].content.strip() if messages[-1].content else ""
+            print(f"\n✅ 子任务完成: {sub_task_result}")
+            print("-" * 50)
+            user_response = input("输入 done 结束任务，q 安全退出并下次恢复，或继续输入新任务:\n> ").strip()
+
+            # 安全退出：不结束任务，保持运行状态以便恢复
+            if user_response.lower() in ('q', 'quit', 'exit'):
+                self.logger.info("用户选择安全退出，长任务保持运行状态可恢复", extra={'tag': 'LONG_TASK_PAUSE'})
+                return "长任务已暂停，输入恢复可继续执行。"
+
+            # 如果用户输入 done，结束长任务
+            if user_response.lower() == 'done':
+                self.logger.info("用户输入 done，结束长任务", extra={'tag': 'LONG_TASK_END'})
+                # 标记会话完成
+                if session_id:
+                    persistence.mark_completed(session_id)
+                self.logger.info("长任务执行完成", extra={'tag': 'TASK_END'})
+                return "长任务已完成。"
+
+            # 构造新的 message0：【总任务】+【Current子任务】
+            new_message0_content = f"【总任务】{original_task}\n【Current子任务】{user_response}"
+            new_message0 = HumanMessage(content=new_message0_content)
+
+            # 构建新状态
+            old_messages = messages[1:] if len(messages) > 0 else []
+            user_msg = HumanMessage(content=user_response)
+
+            current_state = {
+                "messages": [new_message0] + old_messages + [user_msg],
+                "consecutive_failures": 0,
+                "long_task_meta": {"status": "running"}
+            }
+
+            # 保存下一轮初始状态，允许用户在此刻安全退出
+            persistence.save_state(session_id, {
+                "messages": [message_to_dict(m) for m in current_state["messages"]],
+                "consecutive_failures": 0,
+                "long_task_meta": {"status": "running"}
+            })
+            self.logger.info("长任务继续新子任务", extra={'tag': 'LONG_TASK_CONTINUE'})

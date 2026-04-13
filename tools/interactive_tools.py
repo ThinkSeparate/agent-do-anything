@@ -20,27 +20,21 @@ def submit_final_answer(content: str) -> str:
     """
     return f"[任务完成] 最终答案已提交。框架处理中。\n你的最终答案 (content): {content}"
 
-# 这是长任务模式的结束工具。
+# 长任务模式：子任务完成提交工具（非阻塞）
 @tool
-def wait_for_next_task(content: str) -> str:
+def submit_sub_task(content: str) -> str:
     """
-    当你完成当前子任务时调用此工具。
-    系统会等待用户输入下一个任务。
+    当你完成当前子任务时，调用此工具提交结果。
+    系统会记录你的完成内容，并等待用户的下一个指令。
 
     Args:
         content: 当前子任务的完成内容以及所有想提交给用户的信息
-
-    Returns:
-        用户的下一个指令
     """
-    print(f"\n✅ {content}")
-    print("-" * 50)
-    user_input = input("输入 done 结束对话，或继续输入新任务:\n> ").strip()
-    return user_input
+    return content
 
 
-# 短任务模式工具（只有 submit_final_answer）
+# 短任务模式工具
 short_task_tools = [ask_user, submit_final_answer]
 
-# 长任务模式工具（只有 wait_for_next_task）
-long_task_tools = [ask_user, wait_for_next_task]
+# 长任务模式工具
+long_task_tools = [ask_user, submit_sub_task]

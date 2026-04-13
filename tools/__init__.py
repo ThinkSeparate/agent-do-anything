@@ -4,7 +4,7 @@ from tools.file_tools import file_tools
 from tools.system_tools import system_tools
 from tools.network_tools import network_tools, make_http_request
 from tools.office_tools import office_tools
-from tools.interactive_tools import short_task_tools, long_task_tools, ask_user, submit_final_answer, wait_for_next_task
+from tools.interactive_tools import short_task_tools, long_task_tools, ask_user, submit_final_answer, submit_sub_task
 from tools.wrap_with_think import wrap_tool_with_think
 from tools.planning_tools import planning_tools
 from tools.compress_messages import compress_tools
@@ -22,7 +22,7 @@ __all__ = [
 _base_tools = (
     file_tools + system_tools + network_tools +
     office_tools + planning_tools + compress_tools +
-    [ask_user, submit_final_answer, wait_for_next_task]
+    [ask_user, submit_final_answer, submit_sub_task]
 )
 
 
@@ -70,7 +70,7 @@ def get_react_tools(task_mode: str = 'short'):
 
     Args:
         task_mode: 'short' 短任务模式（使用 submit_final_answer）
-                  'long' 长任务模式（使用 wait_for_next_task）
+                  'long' 长任务模式（使用 submit_sub_task）
 
     Returns:
         对应模式的工具列表

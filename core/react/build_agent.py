@@ -27,19 +27,19 @@ def build_react_graph(model_with_tools, system_prompt: str,
         session_id=session_id,
         project_directory=project_directory
     )
-    
-    # 创建一个专门处理最终答案的节点
+
+    # 短任务最终答案节点
     def final_answer_node(state: AgentState):
         """处理最终答案提交的节点"""
-        last_message = state["messages"][-1]
-        tool_call = last_message.tool_calls[0]
-        
-        # 执行 submit_final_answer 工具
-        tool_result = tool_executor(state)  # 或者直接调用工具
-        
-        # 返回结果，标记任务完成
+        tool_result = tool_executor(state)
+        # 标记任务完成
         return {**tool_result, "status": "completed"}
-    
+
+    # 长任务子任务提交节点
+    def sub_task_answer_node(state: AgentState):
+        """处理长任务子任务提交的节点"""
+        return tool_executor(state)
+
     # 构建图
     graph_builder = StateGraph(AgentState)
 
@@ -47,28 +47,25 @@ def build_react_graph(model_with_tools, system_prompt: str,
     graph_builder.add_node("agent", react_model_node)
     graph_builder.add_node("tools", tool_executor)
     graph_builder.add_node("final_answer", final_answer_node)
-    # graph_builder.add_node("compressor", invoke_context_compressor)
-    
+    graph_builder.add_node("sub_task_answer", sub_task_answer_node)
+
     # 添加边
     graph_builder.add_edge(START, "agent")
-    
+
     # 更新条件边
     graph_builder.add_conditional_edges(
         "agent",
         should_continue,
         {
-            "tools": "tools",              # 调用普通工具 -> 去执行工具
-            "end_normal": "final_answer",  # 正常提交答案 -> 去执行最终答案工具
-            "end_abort": END,              # 异常退出 -> 直接结束
+            "tools": "tools",                  # 调用普通工具 -> 去执行工具
+            "end_final": "final_answer",       # 正常提交最终答案 -> 去执行最终答案工具
+            "end_sub_task": "sub_task_answer", # 长任务子任务提交 -> 去执行子任务提交工具
+            "end_abort": END,                  # 异常退出 -> 直接结束
         }
     )
-    
-    # 普通工具执行后, 执行一次压缩，再回到agent节点
-    # graph_builder.add_edge("tools", "compressor")
-    # graph_builder.add_edge("compressor", "agent")
+
     graph_builder.add_edge("tools", "agent")
-    
-    # 最终答案工具执行后结束
     graph_builder.add_edge("final_answer", END)
-    
+    graph_builder.add_edge("sub_task_answer", END)
+
     return graph_builder.compile()

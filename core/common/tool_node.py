@@ -75,8 +75,8 @@ class ToolNode:
         all_new_messages = tool_results + message_updates
         self._assign_index_to_messages(all_new_messages, messages)
 
-        # 保存会话状态
-        self._save_session_state(updated_messages, message_updates, tool_results)
+        # 保存会话状态（透传 state 中的非 messages 字段）
+        self._save_session_state(state, updated_messages, message_updates, tool_results)
 
         # 返回工具结果和更新指令（RemoveMessage等）
         # 注意：message_updates 包含 RemoveMessage 等更新指令，需要传递下去让框架处理
@@ -295,7 +295,8 @@ class ToolNode:
 
         return new_messages
 
-    def _save_session_state(self, messages: List[BaseMessage],
+    def _save_session_state(self, state: AgentState,
+                            messages: List[BaseMessage],
                             message_updates: List[BaseMessage],
                             tool_results: List[BaseMessage]):
         """保存会话状态到持久化存储"""
@@ -303,7 +304,8 @@ class ToolNode:
             try:
                 all_messages = messages + message_updates + tool_results
                 state_to_save = {
-                    "messages": [message_to_dict(m) for m in all_messages]
+                    "messages": [message_to_dict(m) for m in all_messages],
+                    **{k: v for k, v in state.items() if k != "messages"}
                 }
                 self.persistence.save_state(self.session_id, state_to_save)
                 self.logger.debug(f"会话状态已保存: session_id={self.session_id}", extra={'tag': 'STATE_SAVED'})
