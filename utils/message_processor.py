@@ -366,6 +366,102 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
     return prompts
 
 
+def _optimize_large_tool_results(messages: list, logger: logging.Logger = None) -> Tuple[list, int, int]:
+    """
+    优化大工具调用结果：当 ToolMessage 内容很大时，清空对应 AIMessage 的 tool_calls args
+
+    策略：
+    - 遍历消息，找到所有 ToolMessage
+    - 如果 ToolMessage 的 content 超过阈值（3000 token），视为大结果
+    - 找到对应的 AIMessage（通过 tool_call_id 匹配）
+    - 清空那个 AIMessage 的 tool_calls 中对应条目的 args，保留 id 和 name
+
+    Returns:
+        (优化后的消息列表, 处理的大结果数量, 节省的 token 估算)
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    LARGE_RESULT_THRESHOLD = 3000  # 大结果阈值：3000 token
+
+    # 找到所有大结果的 tool_call_id
+    large_result_ids = {}  # tool_call_id -> token_count
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            content_tokens = estimate_tokens(str(getattr(msg, 'content', '') or ''))
+            if content_tokens > LARGE_RESULT_THRESHOLD:
+                tc_id = getattr(msg, 'tool_call_id', None)
+                if tc_id:
+                    large_result_ids[tc_id] = content_tokens
+
+    if not large_result_ids:
+        return messages, 0, 0
+
+    # 遍历消息，清空对应 AIMessage 的 tool_calls args
+    optimized_count = 0
+    saved_tokens = 0
+    result = []
+
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if tool_calls:
+                # 检查是否有 tool_call 需要优化
+                new_tool_calls = []
+                modified = False
+                for tc in tool_calls:
+                    tc_id = tc.get("id")
+                    if tc_id in large_result_ids:
+                        # 清空 args，保留 id 和 name
+                        original_args = tc.get("args", {})
+                        args_tokens = estimate_tokens(json.dumps(original_args, ensure_ascii=False))
+                        saved_tokens += args_tokens
+
+                        new_tc = {
+                            **tc,
+                            "args": {"_optimized": True, "_original_tokens": args_tokens}
+                        }
+                        new_tool_calls.append(new_tc)
+                        optimized_count += 1
+                        modified = True
+                        logger.debug(
+                            f"优化大结果: tool_call_id={tc_id}, "
+                            f"tool={tc.get('name', 'unknown')}, "
+                            f"清空了约{args_tokens} token的args",
+                            extra={"tag": "LARGE_RESULT_OPTIMIZE"}
+                        )
+                    else:
+                        new_tool_calls.append(tc)
+
+                if modified:
+                    # 创建新的 AIMessage，保留其他属性
+                    new_msg = AIMessage(
+                        content=msg.content,
+                        id=msg.id,
+                        tool_calls=new_tool_calls,
+                        additional_kwargs={
+                            **getattr(msg, "additional_kwargs", {}),
+                            "tool_calls_optimized": True
+                        }
+                    )
+                    # 复制 index 属性
+                    if hasattr(msg, 'index') and msg.index is not None:
+                        new_msg.index = msg.index
+                    result.append(new_msg)
+                    continue
+
+        result.append(msg)
+
+    if optimized_count > 0:
+        logger.info(
+            f"大结果优化: 处理了{optimized_count}个大结果工具调用，"
+            f"估算节省{saved_tokens} tokens",
+            extra={"tag": "LARGE_RESULT_OPTIMIZED"}
+        )
+
+    return result, optimized_count, saved_tokens
+
+
 def process_messages_before_send(
     messages: list,
     logger: logging.Logger = None,
@@ -377,9 +473,10 @@ def process_messages_before_send(
     发送给模型前的统一消息处理入口
 
     处理流程：
-    1. Token 截断（如果需要）
-    2. 验证并修复消息完整性（修复截断造成的工具调用链断裂）
-    3. 生成压缩提示
+    1. 大结果优化（清空大 ToolMessage 对应 tool_calls 的 args）
+    2. Token 截断（如果需要）
+    3. 验证并修复消息完整性（修复截断造成的工具调用链断裂）
+    4. 生成压缩提示
 
     Args:
         messages: 原始消息列表
@@ -398,6 +495,9 @@ def process_messages_before_send(
     info = {
         "validated": False,
         "truncated": False,
+        "optimized": False,
+        "optimized_count": 0,
+        "saved_tokens": 0,
         "removed_count": 0,
         "removed_items": [],
         "prompts_added": 0,
@@ -405,12 +505,19 @@ def process_messages_before_send(
         "final_token": 0
     }
 
-    # 记录原始 token（截断前）
+    # 记录原始 token（处理前）
     info["original_token"] = estimate_messages_tokens(result)
     logger.info(f"process_messages_before_send 处理前: {info['original_token']} tokens, {len(result)} 条消息",
                 extra={'tag': 'MSG_PROCESS_START'})
 
-    # 1. Token 截断（先执行，可能破坏工具调用链）
+    # 1. 大结果优化（先执行，减少 token 占用）
+    result, optimized_count, saved_tokens = _optimize_large_tool_results(result, logger)
+    if optimized_count > 0:
+        info["optimized"] = True
+        info["optimized_count"] = optimized_count
+        info["saved_tokens"] = saved_tokens
+
+    # 2. Token 截断（如果仍然超过限制）
     if truncate:
         result, was_truncated, removed_count, removed_items = truncate_messages_for_token_limit(
             result, logger
@@ -419,12 +526,12 @@ def process_messages_before_send(
         info["removed_count"] = removed_count
         info["removed_items"] = removed_items
 
-    # 2. 验证修复（修复截断造成的工具调用链断裂）
+    # 3. 验证修复（修复截断造成的工具调用链断裂）
     if validate:
         result = validate_and_fix_messages(result, logger)
         info["validated"] = True
 
-    # 3. 生成压缩提示
+    # 4. 生成压缩提示
     if generate_prompts:
         prompts = generate_compress_prompts(result, logger)
         if prompts:
@@ -432,7 +539,7 @@ def process_messages_before_send(
             info["prompts_added"] = len(prompts)
 
     info["final_token"] = estimate_messages_tokens(result)
-    logger.info(f"process_messages_before_send 处理后: {info['final_token']} tokens (截断={info['truncated']}, 验证={info['validated']}, 提示={info['prompts_added']})",
+    logger.info(f"process_messages_before_send 处理后: {info['final_token']} tokens (优化={info['optimized']}, 截断={info['truncated']}, 验证={info['validated']}, 提示={info['prompts_added']})",
                 extra={'tag': 'MSG_PROCESS_END'})
 
     return result, info

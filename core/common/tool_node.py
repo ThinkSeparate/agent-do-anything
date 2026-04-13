@@ -142,7 +142,7 @@ class ToolNode:
                         error_infos.append({"idx": target_idx, "reason": f"无效的操作{op_type}"})
                         continue
 
-                    new_msg = self._gen_new_msg(target_msg, new_content)
+                    new_msg = self._gen_new_msg(target_msg, new_content, operation_type=op_type)
                     compression_updates.append(new_msg)
                     compressed_indices.append(target_idx)
                     msg_type = type(target_msg).__name__
@@ -176,8 +176,16 @@ class ToolNode:
 
         return {"tool_results": tool_results, "message_updates": message_updates}
 
-    def _gen_new_msg(self, target_msg, new_content):
-        """生成压缩后的新消息，保持 index 不变，只更新 content"""
+    def _gen_new_msg(self, target_msg, new_content, operation_type: str = None):
+        """
+        生成压缩后的新消息，保持 index 不变，只更新 content。
+
+        Args:
+            target_msg: 目标消息
+            new_content: 新内容
+            operation_type: 操作类型，"clear" 或 "summarize"
+                           clear 操作会清除 tool_calls 以节省 token
+        """
         original_index = getattr(target_msg, 'index', None)
 
         kwargs = {
@@ -195,9 +203,21 @@ class ToolNode:
                 **kwargs
             )
         elif isinstance(target_msg, AIMessage):
+            # 【关键】保留 tool_calls 结构但清空 args 以节省 token
+            # 验证逻辑只检查 id，清空 args 不会导致 ToolMessage 被丢弃
+            original_tool_calls = getattr(target_msg, "tool_calls", None) or []
+            if original_tool_calls and operation_type in ("clear", "summarize"):
+                # 保留 id 和 name，清空 args
+                cleared_tool_calls = [
+                    {**tc, "args": {"_compressed": True}}
+                    for tc in original_tool_calls
+                ]
+            else:
+                cleared_tool_calls = original_tool_calls
+
             new_msg = AIMessage(
                 id=target_msg.id,
-                tool_calls=getattr(target_msg, "tool_calls", None) or [],
+                tool_calls=cleared_tool_calls,
                 **kwargs
             )
         else:
