@@ -59,16 +59,14 @@ class ToolNode:
                 tool_results.extend(result.get("tool_results", []))
                 message_updates.extend(result.get("message_updates", []))
 
-            elif tool_name == "compress_paragraph":
-                result = self._execute_compress_paragraph(messages, tool_call)
-                tool_results.extend(result.get("tool_results", []))
-                message_updates.extend(result.get("message_updates", []))
-
             else:
                 result = self._execute_normal_tool(messages, tool_call)
                 tool_results.extend(result.get("tool_results", []))
                 if result.get("message_updates"):
                     message_updates.extend(result.get("message_updates"))
+
+        # 【段落压缩已移除】自动段落压缩功能已转移到 message_processor.py
+        # 作为系统功能自动检测连续空content段并丢弃
 
         # 应用消息更新（压缩、删除等）到原始消息列表
         updated_messages = self._apply_message_updates(messages, message_updates)
@@ -228,130 +226,6 @@ class ToolNode:
         if original_index is not None:
             new_msg.index = original_index
         return new_msg
-
-    def _execute_compress_paragraph(self, messages: List[BaseMessage],
-                                     tool_call: Dict[str, Any]) -> Dict:
-        """执行段落压缩工具"""
-        tool_results = []
-        message_updates = []
-        tools_by_name = self._get_tools_by_name()
-        args = tool_call["args"]
-
-        try:
-            if len(messages) < 20:
-                content = f"段落压缩拒绝：当前消息数 {len(messages)} 条，未达到 20 条的最低要求。"
-                tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
-                self.logger.warning(f"段落压缩被拒绝：消息数{len(messages)}<20", extra={'tag': 'COMPRESS_PARAGRAPH_DENIED'})
-                return {"tool_results": tool_results, "message_updates": message_updates}
-
-            result = tools_by_name["compress_paragraph"].invoke(args)
-            if not isinstance(result, dict) or not result.get("valid"):
-                content = result.get("message", "段落压缩参数无效") if isinstance(result, dict) else "段落压缩返回无效结果"
-                tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
-                self.logger.warning(content, extra={'tag': 'COMPRESS_PARAGRAPH_INVALID'})
-                return {"tool_results": tool_results, "message_updates": message_updates}
-
-            # 直接使用返回的索引（已经是 msg.index）
-            start_idx = result.get("start_index")
-            end_idx = result.get("end_index")
-
-            compression_updates, summary_desc = self._execute_paragraph_compression(
-                messages, start_idx, end_idx, result.get("summary")
-            )
-
-            if compression_updates:
-                message_updates.extend(compression_updates)
-                self.logger.info(f"成功段落压缩 {len(compression_updates)} 条消息", extra={'tag': 'COMPRESS_PARAGRAPH_SUCCESS'})
-                display_desc = f"段落压缩：{start_idx}-{end_idx}替换为总结"
-                tool_results.append(ToolMessage(content=display_desc, tool_call_id=tool_call["id"]))
-            else:
-                error_msg = f"段落压缩未生效: {summary_desc}"
-                tool_results.append(ToolMessage(content=error_msg, tool_call_id=tool_call["id"]))
-                self.logger.warning(error_msg, extra={'tag': 'COMPRESS_PARAGRAPH_NO_UPDATE'})
-
-        except Exception as e:
-            content = f"段落压缩处理出错: {e}"
-            tool_results.append(ToolMessage(content=content, tool_call_id=tool_call["id"]))
-            self.logger.error(content, extra={'tag': 'COMPRESS_PARAGRAPH_FAILURE'})
-
-        return {"tool_results": tool_results, "message_updates": message_updates}
-
-    def _execute_paragraph_compression(self, messages: List[BaseMessage],
-                                        start_idx: int, end_idx: int,
-                                        summary_text: str) -> Tuple[List[BaseMessage], str]:
-        """执行段落压缩，使用 msg.index 验证范围"""
-        updates = []
-
-        if not isinstance(start_idx, int) or not isinstance(end_idx, int):
-            return [], "段落压缩失败：start_index和end_index必须是整数"
-        if not summary_text or not summary_text.strip():
-            return [], "段落压缩失败：summary不能为空"
-        if start_idx <= 1 or end_idx <= 1:
-            return [], "段落压缩失败：禁止包含index:1(用户初始任务)"
-        if start_idx >= end_idx:
-            return [], "段落压缩失败：start_index必须小于end_index"
-
-        # 收集目标索引范围内的消息
-        target_msgs = []
-        for msg in messages:
-            msg_idx = getattr(msg, 'index', None)
-            if msg_idx is not None and start_idx <= msg_idx <= end_idx:
-                target_msgs.append(msg)
-
-        if not target_msgs:
-            return [], f"段落压缩失败：范围{start_idx}-{end_idx}内没有找到消息"
-
-        # 验证成对约束：第一个必须是AIMessage+tool_calls，最后一个必须是ToolMessage
-        tool_related_msgs = []
-        for msg in target_msgs:
-            is_tool_call = isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None)
-            is_tool_result = isinstance(msg, ToolMessage)
-            if is_tool_call or is_tool_result:
-                tool_related_msgs.append((msg, is_tool_call))
-
-        if not tool_related_msgs:
-            return [], f"段落压缩失败：范围{start_idx}-{end_idx}内没有工具相关消息"
-
-        first_msg, first_is_tool_call = tool_related_msgs[0]
-        if not first_is_tool_call:
-            first_idx = getattr(first_msg, 'index', '?')
-            return [], f"段落压缩失败：范围内第一个工具相关消息index:{first_idx}必须是AIMessage且有tool_calls"
-
-        last_msg, last_is_tool_call = tool_related_msgs[-1]
-        if last_is_tool_call:
-            last_idx = getattr(last_msg, 'index', '?')
-            return [], f"段落压缩失败：范围内最后一个工具相关消息index:{last_idx}必须是ToolMessage"
-
-        try:
-            # 使用第一个消息的ID创建总结消息，继承其index
-            first_msg_index = getattr(first_msg, 'index', None)
-
-            summary_msg = AIMessage(
-                content=f"[段落总结] {summary_text}",
-                id=first_msg.id,
-                tool_calls=[],
-                additional_kwargs={
-                    **getattr(first_msg, "additional_kwargs", {}),
-                    "compressed": True,
-                    "is_paragraph_summary": True,
-                    "original_range": f"{start_idx}-{end_idx}"
-                }
-            )
-            if first_msg_index is not None:
-                summary_msg.index = first_msg_index
-            updates.append(summary_msg)
-
-            # 删除其余消息（除了第一个，也就是 summary_msg 替换的那个）
-            for msg in target_msgs:
-                if msg is not first_msg:
-                    updates.append(RemoveMessage(id=msg.id))
-
-            self.logger.info(f"段落压缩：index:{start_idx}-{end_idx}已替换为总结")
-            return updates, f"段落压缩：{start_idx}-{end_idx}替换为总结"
-
-        except Exception as e:
-            self.logger.error(f"段落压缩执行失败: {e}")
-            return [], f"段落压缩失败: {e}"
 
     def _execute_normal_tool(self, messages: List[BaseMessage],
                               tool_call: Dict[str, Any]) -> Dict:

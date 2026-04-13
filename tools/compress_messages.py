@@ -28,25 +28,4 @@ def compress_messages(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-@tool
-def compress_paragraph(start_index: int, end_index: int, summary: str) -> Dict[str, Any]:
-    """
-    段落压缩。消息数>20时才允许使用。将start_index到end_index范围的消息整体总结替换。
-    start_index必须是工具调用消息(AIMessage且有tool_calls)，end_index必须是工具返回消息(ToolMessage)。
-    禁止包含index:1（用户初始任务）。
-    """
-    if not isinstance(start_index, int) or not isinstance(end_index, int):
-        return {"type": "compress_paragraph_request", "valid": False, "message": "start_index和end_index必须是整数"}
-    if not summary or not summary.strip():
-        return {"type": "compress_paragraph_request", "valid": False, "message": "summary不能为空"}
-
-    return {
-        "type": "compress_paragraph_request",
-        "valid": True,
-        "start_index": start_index,
-        "end_index": end_index,
-        "summary": summary.strip()
-    }
-
-
-compress_tools = [compress_messages, compress_paragraph]
+compress_tools = [compress_messages]

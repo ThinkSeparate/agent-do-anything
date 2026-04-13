@@ -366,6 +366,138 @@ def generate_compress_prompts(messages: list, logger: logging.Logger = None) -> 
     return prompts
 
 
+def _cleanup_empty_messages(messages: list, logger: logging.Logger = None) -> Tuple[list, int, int, list]:
+    """
+    清理空消息：检测并丢弃连续空 content 的消息段落
+
+    策略：
+    - 遍历消息，连续收集可删除的空内容消息
+    - HumanMessage 空内容可删除（系统提示类消息，长期迭代后可清理）
+    - 工具调用和返回必须成对删除：遇到空 AIMessage 检查下一条 ToolMessage
+      - 如果 ToolMessage 也空，两者都加入可删除列表
+      - 如果 ToolMessage 不空，停止当前段落（保护工具链）
+    - 达到阈值（默认3条）时，空段落被整体删除
+
+    注意：此功能不是"压缩"，是直接丢弃空消息。如需保留信息的压缩，请使用 compress_messages 工具。
+
+    Returns:
+        (清理后的消息列表, 清理的段落数量, 删除的消息数量, 清理信息列表)
+        清理信息列表: [(first_msg_idx, last_msg_idx, count), ...] 用于后续生成提示消息
+            - first_msg_idx: 段落第一条消息的 index 字段值
+            - last_msg_idx: 段落最后一条消息的 index 字段值
+            - count: 删除的消息数量
+    """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    EMPTY_THRESHOLD = 3  # 连续空消息阈值
+
+    def _is_empty_content(msg) -> bool:
+        """检查消息 content 是否为空"""
+        content = str(getattr(msg, 'content', '') or '').strip()
+        return len(content) == 0 or content in ['[摘要]', '[段落总结]', '[已压缩]']
+
+    def _can_be_removed(msg) -> bool:
+        """检查消息是否可以被删除（SystemMessage 不可删除）"""
+        return not isinstance(msg, SystemMessage) and _is_empty_content(msg)
+
+    result = []
+    cleanup_count = 0
+    removed_count = 0
+    cleanup_info_list = []  # 收集清理信息用于后续生成提示
+    i = 0
+
+    while i < len(messages):
+        msg = messages[i]
+
+        # 尝试收集可删除段落
+        if _can_be_removed(msg):
+            removable_indices = []  # 可删除消息索引列表
+            j = i
+
+            while j < len(messages):
+                current_msg = messages[j]
+
+                # SystemMessage 或非空消息中断收集
+                if isinstance(current_msg, SystemMessage) or not _is_empty_content(current_msg):
+                    break
+
+                # 检查是否是带 tool_calls 的 AIMessage（需要成对处理）
+                if isinstance(current_msg, AIMessage) and getattr(current_msg, "tool_calls", None):
+                    tool_calls = current_msg.tool_calls
+                    expected_id = tool_calls[0].get("id") if tool_calls else None
+
+                    # 检查下一条是否是对应的 ToolMessage
+                    if j + 1 < len(messages):
+                        next_msg = messages[j + 1]
+                        if isinstance(next_msg, ToolMessage) and next_msg.tool_call_id == expected_id:
+                            # 下一条是匹配的 ToolMessage，检查是否为空
+                            if _is_empty_content(next_msg):
+                                # 成对都空，加入可删除列表
+                                removable_indices.extend([j, j + 1])
+                                j += 2  # 跳过两条
+                                continue
+                            else:
+                                # ToolMessage 非空，停止收集（不能破坏链）
+                                break
+
+                    # 没有下一条，或不匹配，或不是 ToolMessage
+                    # 这种情况理论上不会出现，但防御性处理：AIMessage 单独可删
+                    removable_indices.append(j)
+                    j += 1
+                elif isinstance(current_msg, ToolMessage):
+                    # 孤立的 ToolMessage（前面没有匹配的 AIMessage）
+                    # 说明消息序列有问题，不应该删除，中断收集
+                    logger.warning(
+                        f"空消息清理: 检测到孤立ToolMessage(索引{j})，中断收集",
+                        extra={"tag": "CLEANUP_ORPHAN_TOOL"}
+                    )
+                    break
+                else:
+                    # HumanMessage，单独可删
+                    removable_indices.append(j)
+                    j += 1
+
+            # 检查是否达到压缩阈值
+            if len(removable_indices) >= EMPTY_THRESHOLD:
+                # 获取段落起始和结束消息，使用 msg.index 字段值
+                first_msg_pos = removable_indices[0]
+                last_msg_pos = removable_indices[-1]
+                first_msg = messages[first_msg_pos]
+                last_msg = messages[last_msg_pos]
+
+                # 获取消息的 index 字段值（不是列表位置）
+                first_msg_idx = getattr(first_msg, 'index', first_msg_pos)
+                last_msg_idx = getattr(last_msg, 'index', last_msg_pos)
+
+                # 【修改】不再直接追加提示消息，而是收集清理信息
+                # 提示消息将在 process_messages_before_send 最后统一追加
+                cleanup_info_list.append((first_msg_idx, last_msg_idx, len(removable_indices)))
+                cleanup_count += 1
+                removed_count += len(removable_indices)
+
+                logger.info(
+                    f"空消息清理: 消息index {first_msg_idx}-{last_msg_idx} 的{len(removable_indices)}条空消息被移除",
+                    extra={"tag": "EMPTY_CLEANUP"}
+                )
+
+                # 跳过已处理的消息
+                i = j
+                continue
+
+        # 不可删除，保留原消息
+        result.append(msg)
+        i += 1
+
+    if cleanup_count > 0:
+        logger.info(
+            f"空消息清理完成: 清理了{cleanup_count}个段落，删除了{removed_count}条空消息",
+            extra={"tag": "EMPTY_CLEANUP_DONE"}
+        )
+
+    return result, cleanup_count, removed_count, cleanup_info_list
+
+
 def _optimize_large_tool_results(messages: list, logger: logging.Logger = None) -> Tuple[list, int, int]:
     """
     优化大工具调用结果：当 ToolMessage 内容很大时，清空对应 AIMessage 的 tool_calls args
@@ -473,10 +605,11 @@ def process_messages_before_send(
     发送给模型前的统一消息处理入口
 
     处理流程：
-    1. 大结果优化（清空大 ToolMessage 对应 tool_calls 的 args）
-    2. Token 截断（如果需要）
-    3. 验证并修复消息完整性（修复截断造成的工具调用链断裂）
-    4. 生成压缩提示
+    1. 空消息清理（检测连续空content的消息段并丢弃）
+    2. 大结果优化（清空大 ToolMessage 对应 tool_calls 的 args）
+    3. Token 截断（如果需要）
+    4. 验证并修复消息完整性（修复截断造成的工具调用链断裂）
+    5. 生成压缩提示
 
     Args:
         messages: 原始消息列表
@@ -498,6 +631,9 @@ def process_messages_before_send(
         "optimized": False,
         "optimized_count": 0,
         "saved_tokens": 0,
+        "cleanup_done": False,
+        "cleanup_count": 0,
+        "cleanup_removed": 0,
         "removed_count": 0,
         "removed_items": [],
         "prompts_added": 0,
@@ -510,14 +646,21 @@ def process_messages_before_send(
     logger.info(f"process_messages_before_send 处理前: {info['original_token']} tokens, {len(result)} 条消息",
                 extra={'tag': 'MSG_PROCESS_START'})
 
-    # 1. 大结果优化（先执行，减少 token 占用）
+    # 1. 空消息清理（检测连续空content段并丢弃）
+    result, cleanup_count, cleanup_removed, cleanup_info_list = _cleanup_empty_messages(result, logger)
+    if cleanup_count > 0:
+        info["cleanup_done"] = True
+        info["cleanup_count"] = cleanup_count
+        info["cleanup_removed"] = cleanup_removed
+
+    # 2. 大结果优化（清空大结果对应 tool_calls 的 args）
     result, optimized_count, saved_tokens = _optimize_large_tool_results(result, logger)
     if optimized_count > 0:
         info["optimized"] = True
         info["optimized_count"] = optimized_count
         info["saved_tokens"] = saved_tokens
 
-    # 2. Token 截断（如果仍然超过限制）
+    # 3. Token 截断（如果仍然超过限制）
     if truncate:
         result, was_truncated, removed_count, removed_items = truncate_messages_for_token_limit(
             result, logger
@@ -531,7 +674,30 @@ def process_messages_before_send(
         result = validate_and_fix_messages(result, logger)
         info["validated"] = True
 
-    # 4. 生成压缩提示
+    # 4. 统一追加提示消息（先追加空消息清理提示，再追加压缩提示）
+    # 4.1 追加空消息清理提示（合并为一条总提示，放在消息列表末尾）
+    if cleanup_info_list:
+        # 构建合并的提示内容
+        cleanup_details = []
+        total_removed = 0
+        for first_msg_idx, last_msg_idx, count in cleanup_info_list:
+            cleanup_details.append(f"消息index {first_msg_idx}-{last_msg_idx} 的 {count} 条")
+            total_removed += count
+
+        # 生成一条总的提示消息
+        cleanup_content = "[空消息清理] " + "; ".join(cleanup_details) + " 已自动移除"
+        cleanup_msg = HumanMessage(
+            content=cleanup_content,
+            additional_kwargs={
+                "auto_cleanup": True,
+                "cleanup_batches": cleanup_info_list,  # 保留原始信息供参考
+                "total_removed": total_removed
+            }
+        )
+        result.append(cleanup_msg)
+        logger.info(f"追加空消息清理提示: 共 {len(cleanup_info_list)} 批，移除 {total_removed} 条消息", extra={'tag': 'CLEANUP_PROMPTS_ADDED'})
+
+    # 4.2 追加压缩提示（原有的生成压缩提示功能）
     if generate_prompts:
         prompts = generate_compress_prompts(result, logger)
         if prompts:
@@ -539,7 +705,12 @@ def process_messages_before_send(
             info["prompts_added"] = len(prompts)
 
     info["final_token"] = estimate_messages_tokens(result)
-    logger.info(f"process_messages_before_send 处理后: {info['final_token']} tokens (优化={info['optimized']}, 截断={info['truncated']}, 验证={info['validated']}, 提示={info['prompts_added']})",
+    logger.info(f"process_messages_before_send 处理后: {info['final_token']} tokens ("
+                f"空消息清理={info['cleanup_done']}, "
+                f"大结果优化={info['optimized']}, "
+                f"截断={info['truncated']}, "
+                f"验证={info['validated']}, "
+                f"提示={info['prompts_added']})",
                 extra={'tag': 'MSG_PROCESS_END'})
 
     return result, info
