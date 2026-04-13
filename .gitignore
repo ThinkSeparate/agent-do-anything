@@ -164,3 +164,6 @@ config/user_policy.yaml
 
 # User profile (user-specific configuration)
 user_profile.yaml
+
+# 测试数据（大文件，不提交到git）
+tests/test_data/

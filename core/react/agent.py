@@ -14,6 +14,7 @@ from utils.token_utils import (
     set_model_name, set_tools_list
 )
 from core.common import agent_utils
+from core.common.message_validator import validate_and_repair, MessageValidationError
 from core.react.prompts import system_prompt_template
 from core.react.build_agent import build_react_graph
 from utils.session_persistence import SessionPersistence
@@ -126,8 +127,20 @@ class ReActAgent:
                 if filtered_count > 0:
                     self.logger.info(f"会话恢复: 过滤掉 {filtered_count} 条 RemoveMessage",
                                    extra={'tag': 'RESUME_FILTER'})
-                # 【已迁移】消息处理已统一到 model_node.py 中处理
-                # 包括：验证修复、token截断、生成提示
+
+                # 【新增】消息验证和修复（交互模式）
+                # 自动修复尾部，如果中间有问题会询问用户
+                try:
+                    success, messages = validate_and_repair(
+                        messages, self.logger
+                    )
+                except MessageValidationError as e:
+                    self.logger.error(f"会话恢复: 消息验证失败，任务不可用: {e}", extra={'tag': 'RESUME_FAILED'})
+                    persistence.mark_corrupted(session_id)
+                    return None
+                # 验证通过（自动修复或用户确认修复）
+                self.logger.info("会话恢复: 消息验证通过", extra={'tag': 'RESUME_OK'})
+
                 consecutive_failures = saved_state.get("consecutive_failures", 0)
                 initial_state = {
                     "messages": messages,
@@ -186,6 +199,12 @@ class ReActAgent:
             self.logger.warning("任务被用户中断或系统退出，会话保持运行状态",
                                extra={'tag': 'TASK_INTERRUPTED'})
             raise  # 重新抛出，让上层Processed
+        except MessageValidationError as e:
+            # 消息验证失败且用户拒绝修复，标记会话为 corrupted
+            self.logger.error(f"任务终止: {e}", extra={'tag': 'TASK_VALIDATION_FAILED'})
+            if session_id:
+                persistence.mark_corrupted(session_id)
+            return f"任务终止: 消息上下文损坏且无法修复。{e}"
         except Exception as e:
             self.logger.critical(f"任务执行过程中发生未捕获的异常: {e}", exc_info=True,
                                  extra={'tag': 'TASK_CRASH'})

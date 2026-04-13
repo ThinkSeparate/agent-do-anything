@@ -72,8 +72,6 @@ def create_model_node(model_with_tools, system_prompt: str):
 
     def react_model_node(state: AgentState) -> dict:
         """调用 LLM 获取响应，并记录详细日志。"""
-        logger.info("正在向模型发送请求...", extra={'tag': 'MODEL_REQUEST'})
-
         # 1. 为没有索引的消息分配索引（直接修改原始消息）
         next_index = _get_max_index(state["messages"]) + 1
         for msg in state["messages"]:
@@ -123,11 +121,11 @@ def create_model_node(model_with_tools, system_prompt: str):
         retry_count = 0
 
         while retry_count < max_retries:
-            # 【统一处理】验证、截断、生成提示（每次重试前执行）
+            # 【统一处理】清理、截断、生成提示（每次重试前执行）
+            # 注意：消息验证修复逻辑已转移到 message_validator 模块
             processed_messages, process_info = process_messages_before_send(
                 messages_to_send,
                 logger=logger,
-                validate=True,
                 truncate=True,
                 generate_prompts=(retry_count == 0)  # 只在第一次生成提示，避免重复
             )
@@ -145,6 +143,7 @@ def create_model_node(model_with_tools, system_prompt: str):
             logger.debug(processed_messages, extra={'tag': 'CONV_SEND'})
 
             try:
+                logger.info("正在向模型发送请求...", extra={'tag': 'MODEL_REQUEST'})
                 response = model_with_tools.invoke(processed_messages)
                 break  # 成功，跳出循环
 
@@ -165,9 +164,20 @@ def create_model_node(model_with_tools, system_prompt: str):
                     )
                 elif 'tool_calls' in error_msg_lower and 'tool messages' in error_msg_lower:
                     logger.warning(
-                        f"工具调用链断裂(尝试{retry_count}/{max_retries})，将由消息处理器自动修复",
+                        f"工具调用链断裂(尝试{retry_count}/{max_retries})，需要验证修复",
                         extra={'tag': 'TOOL_CALL_MISMATCH'}
                     )
+                    # 【新增】调用完整验证修复（包含用户交互）
+                    from core.common.message_validator import validate_and_repair, MessageValidationError
+                    success, repaired_messages = validate_and_repair(
+                        messages_to_send, logger=logger
+                    )
+                    if success:
+                        messages_to_send = repaired_messages
+                        logger.info("验证修复成功，继续任务", extra={'tag': 'VALIDATION_REPAIRED'})
+                        continue  # 修复后重试
+                    # 用户拒绝修复时 validate_and_repair 会抛出 MessageValidationError
+                    # 直接跳出重试循环，由外层 agent 统一处理
                 else:
                     logger.warning(
                         f"BadRequestError(尝试{retry_count}/{max_retries})，将由消息处理器处理",

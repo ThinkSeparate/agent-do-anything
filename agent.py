@@ -160,7 +160,11 @@ def main(project_directory):
                 if should_resume:
                     # 用户选择继续执行（恢复）- 直接使用选择的任务ID
                     print(f"\n恢复会话 {selected_task_id}...")
-                    _run_task(project_dir, logger, user_query, selected_task_id, is_from_history, is_new=False, task_mode=exec_task_mode)
+                    result = _run_task(project_dir, logger, user_query, selected_task_id, is_from_history, is_new=False, task_mode=exec_task_mode)
+                    if result is None:
+                        # 恢复失败（消息验证未通过），返回主菜单
+                        print("\n会话恢复失败，返回主菜单。")
+                        continue
                 else:
                     # 用户选择重新执行（新建会话）
                     session_id = task_manager.save_task(user_query, task_mode=exec_task_mode)
@@ -469,7 +473,11 @@ def _check_resume_session(project_dir, task_manager):
 
 
 def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_new=False, task_mode='short'):
-    """运行任务"""
+    """运行任务
+
+    Returns:
+        str: 任务结果报告，或 None 表示恢复失败
+    """
     mode_name = '长任务' if task_mode == 'long' else '短任务'
     logger.info(f"开始处理{mode_name} (来源: {'历史记录' if is_from_history else '新输入'})",
                 extra={'tag': 'TASK_START'})
@@ -485,6 +493,11 @@ def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_n
     try:
         react_agent = ReActAgent(project_directory=project_dir, task_mode=task_mode)
         final_report = react_agent.run(user_query, session_id=session_id, is_new=is_new)
+
+        # 如果返回 None，表示恢复失败（消息验证未通过）
+        if final_report is None:
+            return None
+
         logger.info("ReAct Agent 执行完成", extra={'tag': 'REACT_END'})
 
         print("\n" + "=" * 60)
@@ -493,9 +506,12 @@ def _run_task(project_dir, logger, user_query, session_id, is_from_history, is_n
         print(final_report)
         print("=" * 60)
 
+        return final_report
+
     except Exception as e:
         logger.error(f"ReAct Agent 执行失败: {str(e)}", extra={'tag': 'REACT_ERROR'})
         print(f"\n❌ 任务执行失败: {str(e)}")
+        return None
 
 
 if __name__ == "__main__":

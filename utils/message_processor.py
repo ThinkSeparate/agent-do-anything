@@ -11,100 +11,6 @@ from config.configuration import config
 from utils.token_utils import estimate_tokens, estimate_messages_tokens, get_tools_token_count
 
 
-def validate_and_fix_messages(messages: list, logger: logging.Logger = None) -> list:
-    """
-    验证并修复消息完整性（队列方式）：
-    顺序弹出消息，确保 AIMessage(tool_calls) 后紧跟对应 ToolMessage
-
-    逻辑：
-    - 弹出消息，如果是 AIMessage 且有 tool_calls：
-        - 检查队列头部是否是对应的 ToolMessage
-        - 如果是，一起弹出加入结果
-        - 如果不是，清空 tool_calls 后加入结果（队列头部消息重新压回）
-    - 如果是 ToolMessage 单独出现：丢弃（孤立）
-    - 其他消息：直接加入结果
-    """
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
-    input_q = deque(messages)
-    output = []
-    removed_count = 0
-    fixed_count = 0
-
-    while input_q:
-        msg = input_q.popleft()
-
-        if isinstance(msg, AIMessage):
-            tool_calls = getattr(msg, "tool_calls", None) or []
-
-            if not tool_calls:
-                output.append(msg)
-                continue
-
-            # 有 tool_calls，需要检查后面是否紧跟对应 ToolMessage
-            expected_ids = {tc.get("id") for tc in tool_calls if tc.get("id")}
-            matched_tools = []
-
-            # 尝试从队列头部取出匹配的 ToolMessage
-            while input_q and isinstance(input_q[0], ToolMessage) and len(matched_tools) < len(tool_calls):
-                tool_msg = input_q.popleft()
-                tc_id = getattr(tool_msg, "tool_call_id", None)
-
-                if tc_id in expected_ids:
-                    matched_tools.append(tool_msg)
-                    expected_ids.remove(tc_id)
-                else:
-                    # ID 不匹配，丢弃这个 ToolMessage
-                    logger.warning(f"Remove orphaned ToolMessage (tool_call_id={tc_id})",
-                                  extra={"tag": "MSG_FIX"})
-                    removed_count += 1
-
-            if len(matched_tools) == len(tool_calls):
-                # 全部匹配，保留
-                output.append(msg)
-                output.extend(matched_tools)
-            else:
-                # 未全部匹配（遇到非 ToolMessage 或数量不足）
-                # 将已取出的 ToolMessage 压回队列头部（它们可能是别的 AIMessage 的）
-                for tool_msg in reversed(matched_tools):
-                    input_q.appendleft(tool_msg)
-
-                logger.warning(f"Fix AIMessage: clearing {len(tool_calls)} out-of-order tool_calls",
-                              extra={"tag": "MSG_FIX"})
-                fixed_count += 1
-                output.append(AIMessage(
-                    content=msg.content,
-                    id=msg.id,
-                    tool_calls=[],
-                    additional_kwargs={
-                        **getattr(msg, "additional_kwargs", {}),
-                        "tool_calls_fixed": True,
-                        "original_tool_calls_count": len(tool_calls)
-                    }
-                ))
-
-        elif isinstance(msg, ToolMessage):
-            # 孤立的 ToolMessage（没有前置 AIMessage 匹配）
-            tc_id = getattr(msg, "tool_call_id", None)
-            logger.warning(f"Remove orphaned ToolMessage (tool_call_id={tc_id})",
-                          extra={"tag": "MSG_FIX"})
-            removed_count += 1
-            # 丢弃，不加入输出
-
-        else:
-            # 普通消息
-            output.append(msg)
-
-    if removed_count > 0 or fixed_count > 0:
-        logger.info(
-            f"Message validation: removed {removed_count} orphaned ToolMessages, "
-            f"fixed {fixed_count} AIMessages",
-            extra={"tag": "MSG_VALIDATED"}
-        )
-
-    return output
-
 
 def _remove_last_message_smart(messages: list, logger: logging.Logger) -> Tuple[list, int, str]:
     """
@@ -597,7 +503,6 @@ def _optimize_large_tool_results(messages: list, logger: logging.Logger = None) 
 def process_messages_before_send(
     messages: list,
     logger: logging.Logger = None,
-    validate: bool = True,
     truncate: bool = True,
     generate_prompts: bool = True
 ) -> Tuple[list, dict]:
@@ -608,13 +513,14 @@ def process_messages_before_send(
     1. 空消息清理（检测连续空content的消息段并丢弃）
     2. 大结果优化（清空大 ToolMessage 对应 tool_calls 的 args）
     3. Token 截断（如果需要）
-    4. 验证并修复消息完整性（修复截断造成的工具调用链断裂）
-    5. 生成压缩提示
+    4. 生成压缩提示
+
+    注意：消息验证和修复逻辑已转移到 message_validator 模块，
+    在持久化恢复和 model_node 中统一处理。
 
     Args:
         messages: 原始消息列表
         logger: 可选的日志记录器
-        validate: 是否执行验证修复
         truncate: 是否执行 token 截断
         generate_prompts: 是否生成压缩提示
 
@@ -626,7 +532,6 @@ def process_messages_before_send(
 
     result = list(messages)
     info = {
-        "validated": False,
         "truncated": False,
         "optimized": False,
         "optimized_count": 0,
@@ -669,10 +574,9 @@ def process_messages_before_send(
         info["removed_count"] = removed_count
         info["removed_items"] = removed_items
 
-    # 3. 验证修复（修复截断造成的工具调用链断裂）
-    if validate:
-        result = validate_and_fix_messages(result, logger)
-        info["validated"] = True
+    # 3. Token 截断后的处理（截断可能破坏工具调用链）
+    # 注意：完整的验证修复逻辑已转移到 message_validator 模块
+    # 在持久化恢复和 model_node 中统一处理
 
     # 4. 统一追加提示消息（先追加空消息清理提示，再追加压缩提示）
     # 4.1 追加空消息清理提示（合并为一条总提示，放在消息列表末尾）
@@ -709,7 +613,6 @@ def process_messages_before_send(
                 f"空消息清理={info['cleanup_done']}, "
                 f"大结果优化={info['optimized']}, "
                 f"截断={info['truncated']}, "
-                f"验证={info['validated']}, "
                 f"提示={info['prompts_added']})",
                 extra={'tag': 'MSG_PROCESS_END'})
 

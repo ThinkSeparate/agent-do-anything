@@ -173,6 +173,21 @@ class SessionPersistence:
             )
             conn.commit()
 
+    def mark_corrupted(self, session_id: int) -> None:
+        """Mark a session as corrupted (unrecoverable).
+
+        Args:
+            session_id: The ID of the session to mark.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """UPDATE session_states
+                   SET status = 'corrupted', updated_at = CURRENT_TIMESTAMP
+                   WHERE session_id = ?""",
+                (session_id,)
+            )
+            conn.commit()
+
     def get_last_session(self) -> Optional[Dict[str, Any]]:
         """Get the most recent session (by session_id).
 
